@@ -20,8 +20,13 @@ enum GitHub {
                              "--json", "number,headRefName,state,isDraft,url"])
         async let mine = gh_(["pr", "list", "--author", "@me", "--state", "open", "--limit", "50",
                               "--json", "number,title,headRefName,isDraft,reviewDecision,url,closingIssuesReferences,statusCheckRollup,updatedAt"])
+        // Reviews, comments and commits are heavy: GitHub refuses them for 50 PRs at once (over
+        // 500,000 nodes), so they come in a smaller call that may fail on its own.
+        async let feedback = gh_(["pr", "list", "--author", "@me", "--state", "open", "--limit", "25",
+                                  "--json", "number,latestReviews,comments,commits"])
         async let reviews = gh_(["pr", "list", "--search", "review-requested:@me", "--state", "open", "--limit", "50",
                                  "--json", "number,title,headRefName,author,url,createdAt"])
+        async let viewer = gh_(["api", "user", "--jq", ".login"])
         async let issues = gh_(["issue", "list", "--assignee", "@me", "--state", "open", "--limit", "50",
                                 "--json", "number,title,labels,url,updatedAt"])
 
@@ -34,29 +39,42 @@ enum GitHub {
         var data = RepoGitHubData()
         let allPRs = decode([GHPR].self, allResult.out) ?? []
         data.prsByBranch = prsByBranch(allPRs)
-        data.ownerRepo = allPRs.first.flatMap { URL(string: $0.url) }.flatMap(Template.ownerAndRepo)
+        data.ownerRepo = allPRs.first?.url.flatMap(URL.init(string:)).flatMap(Template.ownerAndRepo)
+        let me = Shell.lines(await viewer.out).first ?? ""
+        // Reviews and comments from others since your last push, per PR.
+        var newFeedback: [Int: Int] = [:]
+        for pr in decode([GHPR].self, await feedback.out) ?? [] {
+            let lastPush = pr.commits?.compactMap(\.committedDate).max() ?? .distantPast
+            // Approvals need no answer; comments and change requests do.
+            let reviews = (pr.latestReviews ?? []).filter {
+                $0.author?.login != me && $0.state != "APPROVED" && ($0.submittedAt ?? .distantPast) > lastPush
+            }
+            let comments = (pr.comments ?? []).filter { $0.author?.login != me && ($0.createdAt ?? .distantPast) > lastPush }
+            newFeedback[pr.number] = reviews.count + comments.count
+        }
         data.mine = (decode([GHPR].self, await mine.out) ?? []).compactMap { pr in
-            guard let url = URL(string: pr.url) else { return nil }
+            guard let url = pr.url.flatMap(URL.init(string:)) else { return nil }
             return MyPR(
                 repo: repo,
                 number: pr.number,
                 title: pr.title ?? "",
-                branch: pr.headRefName,
+                branch: pr.headRefName ?? "",
                 isDraft: pr.isDraft ?? false,
                 review: pr.reviewDecision.flatMap(ReviewDecision.init(rawValue:)),
                 checks: summarize(pr.statusCheckRollup ?? []),
                 url: url,
                 closes: (pr.closingIssuesReferences ?? []).map(\.number),
-                updatedAt: pr.updatedAt ?? .distantPast
+                updatedAt: pr.updatedAt ?? .distantPast,
+                newFeedback: newFeedback[pr.number] ?? 0
             )
         }
         data.reviews = (decode([GHPR].self, await reviews.out) ?? []).compactMap { pr in
-            guard let url = URL(string: pr.url) else { return nil }
+            guard let url = pr.url.flatMap(URL.init(string:)) else { return nil }
             return ReviewRequest(
                 repo: repo,
                 number: pr.number,
                 title: pr.title ?? "",
-                branch: pr.headRefName,
+                branch: pr.headRefName ?? "",
                 authorLogin: pr.author?.login ?? "",
                 authorName: pr.author?.name.flatMap { $0.isEmpty ? nil : $0 },
                 url: url,
@@ -81,15 +99,15 @@ enum GitHub {
     private static func prsByBranch(_ prs: [GHPR]) -> [String: PullRequest] {
         var result: [String: PullRequest] = [:]
         for pr in prs {
-            guard let url = URL(string: pr.url) else { continue }
+            guard let url = pr.url.flatMap(URL.init(string:)), let head = pr.headRefName else { continue }
             let state: PullRequest.State = switch pr.state {
             case "OPEN": (pr.isDraft ?? false) ? .draft : .open
             case "MERGED": .merged
             default: .closed
             }
             let candidate = PullRequest(number: pr.number, state: state, url: url)
-            if let existing = result[pr.headRefName], existing.isActive || !candidate.isActive { continue }
-            result[pr.headRefName] = candidate
+            if let existing = result[head], existing.isActive || !candidate.isActive { continue }
+            result[head] = candidate
         }
         return result
     }
@@ -132,19 +150,32 @@ private struct GHPR: Decodable {
         let login: String
         let name: String?
     }
+    struct Review: Decodable {
+        let author: Author?
+        let state: String?
+        let submittedAt: Date?
+    }
+    struct Comment: Decodable {
+        let author: Author?
+        let createdAt: Date?
+    }
+    struct Commit: Decodable { let committedDate: Date? }
 
     let number: Int
     let title: String?
-    let headRefName: String
+    let headRefName: String?
     let state: String?
     let isDraft: Bool?
     let reviewDecision: String?
-    let url: String
+    let url: String?
     let closingIssuesReferences: [Ref]?
     let statusCheckRollup: [Check]?
     let updatedAt: Date?
     let createdAt: Date?
     let author: Author?
+    let latestReviews: [Review]?
+    let comments: [Comment]?
+    let commits: [Commit]?
 }
 
 private struct GHIssue: Decodable {

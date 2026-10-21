@@ -9,6 +9,10 @@ struct OverviewView: View {
         VStack(spacing: 0) {
             SearchBar(model: model, focused: $searchFocused)
             Divider()
+            if model.showsToday {
+                TodayStrip(model: model)
+                Divider()
+            }
             HStack(spacing: 0) {
                 ColumnView(model: model, column: .sessions)
                 Divider()
@@ -25,6 +29,8 @@ struct OverviewView: View {
             }
         }
         .onChange(of: model.focusToken, initial: true) { searchFocused = true }
+        // A light wash over the blurred background, so the panel reads lighter.
+        .background(Color(light: 0xFAFAFC, dark: 0x1E1E20).opacity(0.72))
     }
 }
 
@@ -47,10 +53,7 @@ private struct SearchBar: View {
             if model.store.isFetchingGitHub {
                 ProgressView().controlSize(.small)
             }
-            Text(repoLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .help(model.store.repos.map(\.name).joined(separator: ", "))
+            ProjectPicker(model: model)
             Button {
                 model.refreshAll()
             } label: {
@@ -59,6 +62,16 @@ private struct SearchBar: View {
             .buttonStyle(.borderless)
             .pointerStyle(.link)
             .help("Refresh sessions, PRs and issues  ⌘R")
+            if !model.isInWindow {
+                Button {
+                    model.onOpenWindow?()
+                } label: {
+                    Image(systemName: "macwindow")
+                }
+                .buttonStyle(.borderless)
+                .pointerStyle(.link)
+                .help("Keep it open as a window")
+            }
             Button {
                 model.onOpenSettings?()
             } label: {
@@ -73,9 +86,74 @@ private struct SearchBar: View {
         .frame(height: 56)
     }
 
-    private var repoLabel: String {
-        let repos = model.store.repos
-        return repos.count == 1 ? repos[0].name : "\(repos.count) repos"
+}
+
+/// Shows one project's sessions, PRs and issues, or all of them.
+private struct ProjectPicker: View {
+    let model: OverviewModel
+
+    var body: some View {
+        Menu {
+            Button {
+                model.setProject(nil)
+            } label: {
+                if model.projectKey == nil { Label("All projects", systemImage: "checkmark") } else { Text("All projects") }
+            }
+            Divider()
+            ForEach(model.store.repos, id: \.key) { repo in
+                Button {
+                    model.setProject(repo)
+                } label: {
+                    if model.projectKey == repo.key { Label(repo.name, systemImage: "checkmark") } else { Text(repo.name) }
+                }
+            }
+        } label: {
+            Label(model.projectName ?? "All projects", systemImage: "folder")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .fixedSize()
+        .pointerStyle(.link)
+        .help("Show one project")
+    }
+}
+
+/// "Mine" and "To review" above the PR column: tap one to show only it, again to show both.
+private struct PRFilterPills: View {
+    let model: OverviewModel
+
+    var body: some View {
+        let prs = model.projectItems(.prs)
+        let mine = prs.filter { if case .myPR = $0.kind { true } else { false } }.count
+        HStack(spacing: 6) {
+            pill("Mine", count: mine, filter: .mine)
+            pill("To review", count: prs.count - mine, filter: .review)
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.bottom, 4)
+    }
+
+    private func pill(_ title: String, count: Int, filter: OverviewModel.PRFilter) -> some View {
+        let active = model.prFilter == .all || model.prFilter == filter
+        return Button {
+            model.togglePRFilter(filter)
+        } label: {
+            HStack(spacing: 5) {
+                Text(title)
+                Text(verbatim: "\(count)").opacity(0.7)
+            }
+            .font(.system(size: 12, weight: .medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .foregroundStyle(active ? Color.white : Color.secondary)
+            .background(Capsule().fill(active ? Color.accentColor : Color.primary.opacity(0.07)))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .help(model.prFilter == filter ? "Show both lists" : "Show only \(title.lowercased())")
     }
 }
 
@@ -159,6 +237,10 @@ private struct ColumnView: View {
             .contentShape(Rectangle())
             .onTapGesture { model.focus(column) }
 
+            if column == .prs {
+                PRFilterPills(model: model)
+            }
+
             if items.isEmpty {
                 Text(emptyText)
                     .font(.callout)
@@ -169,7 +251,7 @@ private struct ColumnView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(sections(items), id: \.title) { section in
-                                if section.title != Linker.waitingSection {
+                                if section.title != Linker.waitingSection || model.showsToday {
                                     Text(section.title)
                                         .font(.system(size: 11, weight: .semibold))
                                         .foregroundStyle(.secondary)
@@ -206,8 +288,7 @@ private struct ColumnView: View {
             let waiting = items.filter { $0.section == Linker.waitingSection }.count
             return waiting > 0 ? "\(items.count) open · \(waiting) waiting" : "\(items.count) open"
         case .prs:
-            let mine = items.filter { if case .myPR = $0.kind { true } else { false } }.count
-            return "\(mine) mine · \(items.count - mine) to review"
+            return "\(items.count) open"
         case .issues:
             return "\(items.count) assigned to me"
         }
@@ -293,7 +374,7 @@ private struct RowView: View {
     private var content: some View {
         let style = RowStyle(selected: isSelected)
         switch item.kind {
-        case .session(let session) where session.status == .waiting:
+        case .session(let session) where session.status == .waiting && !model.showsToday:
             WaitingPill(model: model, item: item, session: session, isSelected: isSelected)
         default:
             VStack(alignment: .leading, spacing: 4) {
@@ -307,7 +388,7 @@ private struct RowView: View {
                 case .issue(let issue):
                     IssueRow(model: model, item: item, issue: issue, style: style, showsRepo: model.showsRepo(in: item.column))
                 }
-                if !isSession && !item.linkedSessions.isEmpty {
+                if !isSession && !item.linkedSessions.isEmpty && model.isExpanded(item) {
                     LinkedSessions(model: model, sessions: item.linkedSessions, style: style)
                         .padding(.leading, 19)
                 }
@@ -346,10 +427,18 @@ private struct SessionRow: View {
                     .foregroundStyle(style.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let status = session.suggestion.map({ "Suggested: \($0)" }) ?? session.summary {
+                    Text(status)
+                        .font(.system(size: 11))
+                        .foregroundStyle(style.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 6)
             if session.status == .running {
                 Circle().fill(style.tint(.green)).frame(width: 7, height: 7)
+            } else if session.status == .waiting {
+                Circle().fill(style.tint(.orange)).frame(width: 7, height: 7)
             } else {
                 Text(age(session.updatedAt))
                     .font(.system(size: 11))
@@ -369,7 +458,7 @@ private struct SessionRow: View {
     }
 }
 
-private struct WaitingPill: View {
+struct WaitingPill: View {
     let model: OverviewModel
     let item: OverviewItem
     let session: LiveSession
@@ -381,14 +470,21 @@ private struct WaitingPill: View {
     var body: some View {
         HStack(spacing: 9) {
             Circle().fill(.orange).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Waiting for you")
-                    .font(.system(size: 12.5, weight: .medium))
-                Text(details)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(session.name)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                    Text(age(session.updatedAt))
+                        .font(.system(size: 11))
+                        .opacity(0.7)
+                }
+                // What it waits on: a question, a plan to approve, or a tool that wants permission.
+                Text(session.waitingFor ?? "Waiting for you")
                     .font(.system(size: 11))
                     .opacity(0.85)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             Button {
@@ -412,13 +508,6 @@ private struct WaitingPill: View {
         .padding(.bottom, 4)
     }
 
-    private var details: String {
-        var parts = [session.name]
-        if let branch = item.branch { parts.append(branch) }
-        if let reason = session.waitingFor { parts.append(reason) }
-        parts.append(age(session.updatedAt))
-        return parts.joined(separator: " · ")
-    }
 }
 
 private struct MyPRRow: View {
@@ -441,9 +530,7 @@ private struct MyPRRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
-            if item.linkedSessions.isEmpty {
-                StartButton(title: "Start now") { model.startNew(item) }
-            }
+            SessionsControl(model: model, item: item, style: style, startTitle: "Start now")
         }
     }
 
@@ -500,9 +587,7 @@ private struct ReviewRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
-            if item.linkedSessions.isEmpty {
-                StartButton(title: "Start review") { model.startNew(item) }
-            }
+            SessionsControl(model: model, item: item, style: style, startTitle: "Start review")
         }
     }
 
@@ -542,9 +627,7 @@ private struct IssueRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
-            if item.linkedSessions.isEmpty {
-                StartButton(title: "Start now") { model.startNew(item) }
-            }
+            SessionsControl(model: model, item: item, style: style, startTitle: "Start now")
         }
     }
 
@@ -624,7 +707,45 @@ private struct LinkedSessionRow: View {
         .buttonStyle(.plain)
         .pointerStyle(.link)
         .onHover { hovering = $0 }
-        .help(session.isClaudeApp ? "Open in the Claude app" : "Switch to \(session.host?.name ?? "the terminal")")
+        .help([session.waitingFor ?? session.summary, session.isClaudeApp ? "Open in the Claude app" : "Switch to \(session.host?.name ?? "the terminal")"]
+            .compactMap { $0 }.joined(separator: "\n"))
+    }
+}
+
+/// "3 sessions ⌄" opens and closes a row's session list; with none, the start button instead.
+private struct SessionsControl: View {
+    let model: OverviewModel
+    let item: OverviewItem
+    let style: RowStyle
+    let startTitle: String
+
+    var body: some View {
+        let count = item.linkedSessions.count
+        if count == 0 {
+            StartButton(title: startTitle) { model.startNew(item) }
+        } else {
+            let open = model.isExpanded(item)
+            let waiting = item.linkedSessions.contains { $0.status == .waiting }
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { model.setExpanded(item, !open) }
+            } label: {
+                HStack(spacing: 4) {
+                    if waiting { Circle().fill(.orange).frame(width: 6, height: 6) }
+                    Text(verbatim: "\(count)")
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                        .rotationEffect(.degrees(open ? 0 : -90))
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(style.primary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(style.selected ? Color.white.opacity(0.2) : Color.primary.opacity(0.07)))
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .help(open ? "Hide \(count) session\(count == 1 ? "" : "s")  ←" : "Show \(count) session\(count == 1 ? "" : "s")  →")
+        }
     }
 }
 

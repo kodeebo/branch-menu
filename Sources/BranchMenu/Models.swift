@@ -32,6 +32,8 @@ struct LiveSession: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     var host: HostApp?
     var isLive: Bool
+    /// The `claude` process, while there is one.
+    var processID: pid_t?
     /// Set for sessions the Claude app runs on another machine over SSH ("me@devbox").
     var sshHost: String?
     var isStarred = false
@@ -43,6 +45,10 @@ struct LiveSession: Identifiable, Hashable, Sendable {
     var appBranch: String?
     /// Branches the session committed to, oldest first (Claude app sessions).
     var writtenBranches: [String] = []
+    /// The Claude app's one-line status after the last turn ("CI running, review pending").
+    var summary: String?
+    /// The prompt the Claude app suggests sending next.
+    var suggestion: String?
     /// True when the session is in the Claude app's own list, whose PR links are then trusted
     /// over whatever branch happened to be checked out.
     var isInAppList = false
@@ -52,11 +58,25 @@ struct LiveSession: Identifiable, Hashable, Sendable {
     var isClaudeApp: Bool { entrypoint == "claude-desktop" }
 }
 
+/// A machine the Claude app runs sessions on over SSH, from its own SSH settings.
+struct SSHTarget: Hashable, Sendable {
+    let name: String
+    /// "user@host", as the Claude app stores it.
+    let host: String
+}
+
 /// A local repo, keyed by its git common dir so every worktree maps to the same repo.
 struct RepoRef: Hashable, Sendable {
     let key: String
     let name: String
     let root: String
+}
+
+/// What a repo's main checkout is on right now: where localhost points.
+struct LocalState: Hashable, Sendable {
+    let branch: String
+    /// Changed and untracked files.
+    let changes: Int
 }
 
 struct GitInfo: Hashable, Sendable {
@@ -104,6 +124,8 @@ struct MyPR: Identifiable, Hashable, Sendable {
     /// Issues GitHub will close when this PR merges.
     let closes: [Int]
     let updatedAt: Date
+    /// Reviews and comments from others since your last push.
+    let newFeedback: Int
 
     var id: String { "pr:\(repo.key)#\(number)" }
 }

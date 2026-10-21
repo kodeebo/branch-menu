@@ -22,8 +22,36 @@ struct ComposerView: View {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                     GridRow {
                         Text("Opens in").foregroundStyle(.secondary)
-                        Label("Claude app", systemImage: "sparkle")
+                        HStack(spacing: 10) {
+                            Label("Claude app", systemImage: "sparkle")
+                            if !composer.sshTargets.isEmpty {
+                                Picker("Machine", selection: $composer.target) {
+                                    Label("This Mac", systemImage: "laptopcomputer").tag(ComposerModel.local)
+                                    ForEach(composer.sshTargets, id: \.host) { target in
+                                        Label("\(target.name) (SSH)", systemImage: "server.rack").tag(target.host)
+                                    }
+                                }
+                                .labelsHidden()
+                                .fixedSize()
+                                .pointerStyle(.link)
+                            }
+                        }
                     }
+                    if composer.target != ComposerModel.local {
+                        GridRow {
+                            Text("Folder").foregroundStyle(.secondary)
+                            TextField("Folder on the remote machine", text: $composer.remoteFolder)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12, design: .monospaced))
+                        }
+                        GridRow {
+                            Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                            Text("From your earlier sessions there. New worktrees are only made on this Mac.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if composer.target == ComposerModel.local {
                     GridRow {
                         Text("Folder").foregroundStyle(.secondary)
                         Picker("Folder", selection: $composer.folderMode) {
@@ -48,6 +76,7 @@ struct ComposerView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.head)
+                    }
                     }
                 }
                 .font(.system(size: 13))
@@ -80,7 +109,7 @@ struct ComposerView: View {
                     } label: {
                         HStack(spacing: 6) {
                             if composer.isStarting { ProgressView().controlSize(.small) }
-                            Text("Start in Claude")
+                            Text(composer.target == ComposerModel.local ? "Start in Claude" : "Start on \(composer.sshTargets.first { $0.host == composer.target }?.name ?? "SSH")")
                             Text("⌘↩").opacity(0.7)
                         }
                     }

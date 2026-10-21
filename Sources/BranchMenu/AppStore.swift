@@ -8,6 +8,9 @@ final class AppStore {
     private(set) var overview = Overview()
     private(set) var repos: [RepoRef] = []
     private(set) var isFetchingGitHub = false
+    /// Each repo's main checkout, keyed by repo key: where localhost points right now.
+    private(set) var localStates: [String: LocalState] = [:]
+    private(set) var sshTargets: [SSHTarget] = []
 
     @ObservationIgnored var onChange: (() -> Void)?
 
@@ -17,6 +20,7 @@ final class AppStore {
     @ObservationIgnored private var appSessionCache: [String: AppSessionReader.Entry] = [:]
     @ObservationIgnored private var discoveredFolders: [String] = []
     @ObservationIgnored private var lastDiscovery: Date?
+    @ObservationIgnored private var localCheckedAt: Date?
     @ObservationIgnored private var github: [String: (data: RepoGitHubData, at: Date)] = [:]
     @ObservationIgnored private var githubInFlight: [String: Task<Void, Never>] = [:]
 
@@ -40,6 +44,7 @@ final class AppStore {
         let appCache = appSessionCache
         appSessionCache = await Background.run { AppSessionReader.read(cache: appCache) }
         let merged = mergeSessions(live: live, now: now)
+        sshTargets = await Background.run { SSHConfigReader.targets() }
 
         if lastDiscovery.map({ now.timeIntervalSince($0) > discoveryTTL }) ?? true {
             lastDiscovery = now
@@ -68,6 +73,10 @@ final class AppStore {
         sessions = merged.map { session in
             var session = session
             session.recordedBranch = transcriptCache[session.id]?.branch
+            if session.status != .waiting, let reason = Self.waitingReason(session, transcriptCache[session.id]?.pendingTool, now: now) {
+                session.status = .waiting
+                session.waitingFor = reason
+            }
             return session
         }
         var byKey: [String: RepoRef] = [:]
@@ -75,6 +84,15 @@ final class AppStore {
             if let repo = gitCache[folder]?.info?.repo { byKey[repo.key] = repo }
         }
         repos = byKey.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        if localCheckedAt.map({ now.timeIntervalSince($0) > 20 }) ?? true {
+            localCheckedAt = now
+            let roots = repos.map { [$0.key, $0.root] }
+            let states = await Self.concurrently(roots) { pair in
+                await Background.run { GitProbe.localState(root: pair[1]) }
+            }
+            localStates = Dictionary(uniqueKeysWithValues: states.compactMap { pair, state in state.map { (pair[0], $0) } })
+        }
 
         rebuild()
         fetchGitHub(maxAge: githubTTL)
@@ -111,6 +129,43 @@ final class AppStore {
         for task in fetchGitHub(maxAge: 0) { await task.value }
     }
 
+    /// The folder earlier sessions on `host` used for `repo`, newest first: a folder named like
+    /// the repo, or one inside it (a worktree).
+    func remoteFolder(for repo: RepoRef, on host: String) -> String? {
+        appSessionCache.values.compactMap(\.session)
+            .filter { $0.sshHost == host }
+            .sorted { $0.lastActivity > $1.lastActivity }
+            .lazy
+            .compactMap { session -> String? in
+                let parts = session.cwd.split(separator: "/").map(String.init)
+                guard let index = parts.lastIndex(of: repo.name) else { return nil }
+                return "/" + parts[...index].joined(separator: "/")
+            }
+            .first
+    }
+
+    /// What a running session waits on, read from the tool call at the end of its transcript.
+    /// The Claude app keeps pending permission prompts in memory only, so this is the outside view:
+    /// questions always wait on you; instant tools still unanswered after a few seconds are
+    /// waiting for permission; a Bash call is waiting only while no command runs under it.
+    private static func waitingReason(_ session: LiveSession, _ pending: TranscriptReader.PendingTool?, now: Date) -> String? {
+        guard session.isLive, let pending, let pid = session.processID else { return nil }
+        let waited = now.timeIntervalSince(pending.since)
+        switch pending.name {
+        case "AskUserQuestion":
+            return "has a question for you"
+        case "ExitPlanMode":
+            return "has a plan for you to approve"
+        case "Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob", "Grep":
+            return waited > 4 ? "wants permission: \(pending.name)" : nil
+        case "Bash":
+            return waited > 4 && !Proc.hasChildren(pid) ? "wants permission: Bash" : nil
+        default:
+            // Agents, MCP tools and web calls can legitimately take long; don't guess.
+            return nil
+        }
+    }
+
     /// The Claude app's recent sessions, with live status laid over the ones that have a running
     /// process, plus CLI sessions running in terminals.
     private func mergeSessions(live: [LiveSession], now: Date) -> [LiveSession] {
@@ -124,7 +179,8 @@ final class AppStore {
                 entrypoint: "claude-desktop", hostSessionId: app.id, status: .idle, waitingFor: nil,
                 updatedAt: app.lastActivity, host: claude, isLive: false, sshHost: app.sshHost,
                 isStarred: app.isStarred, appPRNumbers: app.prNumbers, appPRRepo: app.prRepo, appBranch: app.branch,
-                writtenBranches: app.writtenBranches, isInAppList: true
+                writtenBranches: app.writtenBranches, summary: app.summary?.detail, suggestion: app.suggestion,
+                isInAppList: true
             )
         }
         for process in live {
@@ -134,6 +190,7 @@ final class AppStore {
             }
             session.status = process.status
             session.waitingFor = process.waitingFor
+            session.processID = process.processID
             session.updatedAt = max(session.updatedAt, process.updatedAt)
             session.host = process.host ?? session.host
             session.isLive = true

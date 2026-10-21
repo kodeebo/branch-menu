@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = AppStore()
     private lazy var model = OverviewModel(store: store)
     private var panel: PanelController?
+    private var window: OverviewWindowController?
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
     private var settingsWindow: NSWindow?
@@ -25,12 +26,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = PanelController(model: model)
         self.panel = panel
         model.onOpenSettings = { [weak self] in self?.openSettings() }
+        model.onOpenWindow = { [weak self] in self?.openWindow() }
+        // After opening a session or a link: the panel gets out of the way, the window stays.
+        model.onClose = { [weak self] in
+            if self?.window?.isVisible != true { self?.panel?.hide() }
+        }
         installStatusItem()
-        hotKey = HotKey { [weak self] in self?.panel?.toggle() }
+        hotKey = HotKey { [weak self] in self?.toggleOverview() }
         let shortcut = Settings.hotKey
         hotKey?.register(keyCode: shortcut.code, modifiers: shortcut.modifiers)
-        store.onChange = { [weak self] in self?.updateStatusItem() }
+        store.onChange = { [weak self] in
+            guard let self else { return }
+            self.updateStatusItem()
+            // Keep Next up current while it is on screen; the assistant skips unchanged state.
+            if self.panel?.isVisible == true || self.window?.isVisible == true {
+                self.model.refreshSummary(force: false)
+            }
+        }
         store.startPolling()
+        if UserDefaults.standard.bool(forKey: Settings.Key.windowMode) { openWindow() }
 
         // `--show` opens the overview at launch; `--snapshot <file.png>` also renders it to a file
         // and quits. Both are for checking the UI without clicking.
@@ -45,6 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
                     try? await Task.sleep(for: .seconds(1))
+                    // Let the Next up summary land first (it takes a few seconds).
+                    for _ in 0..<60 where model.assistant.isRunning {
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
                     panel.snapshot(to: URL(fileURLWithPath: args[index + 1]))
                     exit(0)
                 }
@@ -70,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
             menu.addItem(withTitle: "Open Overview  \(Settings.hotKey.label)", action: #selector(togglePanel), keyEquivalent: "")
+            menu.addItem(withTitle: "Open as Window", action: #selector(openWindow), keyEquivalent: "")
             menu.addItem(withTitle: "Refresh", action: #selector(refreshAll), keyEquivalent: "")
             menu.addItem(.separator())
             menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -79,8 +98,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sender.performClick(nil)
             statusItem?.menu = nil
         } else {
-            panel?.toggle()
+            toggleOverview()
         }
+    }
+
+    /// The hotkey and the menu bar icon: the window when it is open, else the panel.
+    private func toggleOverview() {
+        guard let window, window.isVisible else {
+            panel?.toggle()
+            return
+        }
+        if window.isFrontmost { NSApp.hide(nil) } else { window.show() }
+    }
+
+    @objc private func openWindow() {
+        panel?.hide()
+        if window == nil {
+            let controller = OverviewWindowController(model: model)
+            controller.onClose = { [weak self] in
+                UserDefaults.standard.set(false, forKey: Settings.Key.windowMode)
+                self?.model.isInWindow = false
+            }
+            window = controller
+        }
+        UserDefaults.standard.set(true, forKey: Settings.Key.windowMode)
+        model.isInWindow = true
+        window?.show()
     }
 
     private func updateStatusItem() {
@@ -91,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             : "Branch Menu · \(Settings.hotKey.label)"
     }
 
-    @objc private func togglePanel() { panel?.toggle() }
+    @objc private func togglePanel() { toggleOverview() }
 
     @objc private func refreshAll() { model.refreshAll() }
 

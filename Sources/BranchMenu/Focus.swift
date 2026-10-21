@@ -23,6 +23,14 @@ enum Focus {
         open("/new", items)
     }
 
+    /// A new Claude app Code session on another machine over SSH.
+    static func newSSHSession(host: String, folder: String, text: String) {
+        var items = [URLQueryItem(name: "ssh_host", value: host)]
+        if !folder.isEmpty { items.append(URLQueryItem(name: "ssh_folder", value: folder)) }
+        if !text.isEmpty { items.append(URLQueryItem(name: "q", value: text)) }
+        open("/new", items)
+    }
+
     private static func open(_ path: String, _ items: [URLQueryItem]) {
         var components = URLComponents()
         components.scheme = "claude"

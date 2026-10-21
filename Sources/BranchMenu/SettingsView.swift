@@ -8,6 +8,7 @@ struct SettingsView: View {
     let suspendHotKey: () -> Void
 
     @AppStorage(Settings.Key.sessionDays) private var sessionDays = 7
+    @AppStorage(Settings.Key.summaryEnabled) private var summaryEnabled = true
     @AppStorage(Settings.Key.issueTemplate) private var issueTemplate = Settings.defaultIssueTemplate
     @AppStorage(Settings.Key.prTemplate) private var prTemplate = Settings.defaultPRTemplate
     @AppStorage(Settings.Key.reviewTemplate) private var reviewTemplate = Settings.defaultReviewTemplate
@@ -82,11 +83,20 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Next up") {
+                Toggle("Write a short summary with Claude (Sonnet)", isOn: $summaryEnabled)
+                Text(Assistant.cliPath == nil
+                     ? "Needs the Claude Code CLI (claude) installed."
+                     : "Runs `claude -p` on your Claude login when the panel opens, at most every 10 minutes, and on ↻. No tools, no saved session.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Shortcut") {
                 LabeledContent("Open the overview") {
                     ShortcutRecorder(register: registerHotKey, suspend: suspendHotKey)
                 }
-                Text("A global shortcut wins over the app in front: with ⌘B, Bold (and the sidebar toggle in VS Code and Cursor) stops working while Branch Menu runs.")
+                Text("A global shortcut wins over the app in front, but not over macOS's own shortcuts. For ⌥⌘Space, turn off \u{201C}Show Finder search window\u{201D} in System Settings › Keyboard › Keyboard Shortcuts › Spotlight.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

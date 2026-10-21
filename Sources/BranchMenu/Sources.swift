@@ -26,6 +26,8 @@ enum SessionReader {
             let cwd = obj["cwd"] as? String
         else { return nil }
 
+        // `claude -p` runs (Branch Menu's own summaries included) are not sessions to switch to.
+        if let kind = obj["kind"] as? String, kind != "interactive" { return nil }
         let pid = pid_t(truncating: pidNumber)
         // Files outlive crashed sessions, and pids get reused: require a live `claude` process.
         guard Proc.isAlive(pid),
@@ -51,7 +53,8 @@ enum SessionReader {
             waitingFor: waitingFor,
             updatedAt: millis.map { Date(timeIntervalSince1970: $0 / 1000) } ?? .distantPast,
             host: Proc.hostApp(for: pid),
-            isLive: true
+            isLive: true,
+            processID: pid
         )
     }
 }
@@ -74,6 +77,18 @@ enum AppSessionReader {
         let prRepo: String?
         /// Branches the session committed to, oldest first.
         let writtenBranches: [String]
+        /// The app's summary of the latest turn, when it is about the latest turn.
+        let summary: TurnSummary?
+        /// The prompt the app suggests sending next.
+        let suggestion: String?
+    }
+
+    /// The Claude app's `postTurnSummary`: e.g. "blocked" with "approve PRs 1234 and 1235".
+    struct TurnSummary: Sendable {
+        let category: String
+        let detail: String?
+        let needsAction: String?
+
     }
 
     struct Entry: Sendable {
@@ -127,8 +142,27 @@ enum AppSessionReader {
             // Entries are "branch" or "<repo path>\0branch".
             writtenBranches: (obj["writtenBranches"] as? [String] ?? []).compactMap {
                 $0.split(separator: "\u{0}").last.map(String.init)
-            }
+            },
+            summary: summary(obj),
+            suggestion: nonEmpty(obj["promptSuggestion"])
         )
+    }
+
+    /// Only a summary of the session's latest reply counts; an older one is out of date.
+    nonisolated private static func summary(_ obj: [String: Any]) -> TurnSummary? {
+        guard let summary = obj["postTurnSummary"] as? [String: Any],
+              let category = summary["status_category"] as? String
+        else { return nil }
+        if let latest = obj["lastAssistantUuid"] as? String,
+           let summarized = (obj["postTurnSummaryFor"] ?? summary["summarizes_uuid"]) as? String,
+           latest != summarized {
+            return nil
+        }
+        return TurnSummary(category: category, detail: nonEmpty(summary["status_detail"]), needsAction: nonEmpty(summary["needs_action"]))
+    }
+
+    nonisolated private static func nonEmpty(_ value: Any?) -> String? {
+        (value as? String).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
     }
 }
 
@@ -162,6 +196,34 @@ enum GitProbe {
     }
 }
 
+extension GitProbe {
+    /// The main checkout's branch and how many files are changed there.
+    nonisolated static func localState(root: String) -> LocalState? {
+        let symbolic = Shell.run(git, ["-C", root, "symbolic-ref", "--short", "-q", "HEAD"])
+        guard let branch = symbolic.status == 0 ? Shell.lines(symbolic.out).first : "detached HEAD" else { return nil }
+        let status = Shell.run(git, ["-C", root, "status", "--porcelain", "--untracked-files=normal"])
+        return LocalState(branch: branch, changes: status.status == 0 ? Shell.lines(status.out).count : 0)
+    }
+}
+
+enum SSHConfigReader {
+    static let file = FileManager.default.homeDirectoryForCurrentUser
+        .appending(path: "Library/Application Support/Claude/ssh_configs.json")
+
+    /// Only the names and hosts; nothing else in the Claude app's SSH settings is read.
+    nonisolated static func targets() -> [SSHTarget] {
+        guard let data = try? Data(contentsOf: file),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let configs = obj["configs"] as? [[String: Any]]
+        else { return [] }
+        return configs.compactMap { config in
+            guard let host = config["sshHost"] as? String, !host.isEmpty else { return nil }
+            let name = (config["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? host
+            return SSHTarget(name: name, host: host)
+        }
+    }
+}
+
 /// Finds a session's transcript (`~/.claude/projects/<encoded cwd>/<sessionId>.jsonl`) and the
 /// `gitBranch` recorded on its last message, which is the branch the session actually worked on.
 enum TranscriptReader {
@@ -169,6 +231,13 @@ enum TranscriptReader {
         let url: URL
         let size: UInt64
         let branch: String?
+        /// A tool call at the end of the transcript that has no result yet.
+        let pendingTool: PendingTool?
+    }
+
+    struct PendingTool: Sendable {
+        let name: String
+        let since: Date
     }
 
     static let projectsDirectory = FileManager.default.homeDirectoryForCurrentUser
@@ -182,7 +251,32 @@ enum TranscriptReader {
               let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? UInt64
         else { return nil }
         if let cached, cached.url == url, cached.size == size { return cached }
-        return Entry(url: url, size: size, branch: lastBranch(in: url, size: size))
+        return Entry(url: url, size: size, branch: lastBranch(in: url, size: size), pendingTool: pendingTool(in: url, size: size))
+    }
+
+    /// The last message decides: an assistant tool call with no result after it is still pending
+    /// (running, or waiting for the user to allow it or answer it).
+    nonisolated private static func pendingTool(in url: URL, size: UInt64) -> PendingTool? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let offset = size > 256 * 1024 ? size - 256 * 1024 : 0
+        guard (try? handle.seek(toOffset: offset)) != nil, let data = try? handle.read(upToCount: Int(size - offset)) else { return nil }
+        let dates = ISO8601DateFormatter()
+        dates.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for line in data.split(separator: UInt8(ascii: "\n")).reversed() {
+            guard let obj = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
+                  let type = obj["type"] as? String, type == "assistant" || type == "user",
+                  obj["isSidechain"] as? Bool != true
+            else { continue }
+            guard type == "assistant",
+                  let content = (obj["message"] as? [String: Any])?["content"] as? [[String: Any]],
+                  let last = content.last, last["type"] as? String == "tool_use",
+                  let name = last["name"] as? String
+            else { return nil }
+            let since = (obj["timestamp"] as? String).flatMap(dates.date(from:)) ?? .distantPast
+            return PendingTool(name: name, since: since)
+        }
+        return nil
     }
 
     nonisolated private static func locate(sessionId: String, cwd: String) -> URL? {
@@ -270,6 +364,13 @@ enum Proc {
         return String(decoding: buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
+    /// Whether the process has child processes, e.g. a shell running a Bash tool call.
+    static func hasChildren(_ pid: pid_t) -> Bool {
+        var children = [pid_t](repeating: 0, count: 64)
+        let count = proc_listchildpids(pid, &children, Int32(children.count * MemoryLayout<pid_t>.size))
+        return count > 0
+    }
+
     static func parent(of pid: pid_t) -> pid_t? {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
@@ -302,8 +403,11 @@ enum Shell {
         let err: String
     }
 
-    /// Runs a command to completion. Blocking: call it through `Background.run`.
-    nonisolated static func run(_ executable: String, _ args: [String], in directory: String? = nil) -> Result {
+    /// Runs a command to completion, or until `timeout` seconds pass. Blocking: call it through
+    /// `Background.run`.
+    nonisolated static func run(
+        _ executable: String, _ args: [String], in directory: String? = nil, timeout: TimeInterval? = nil
+    ) -> Result {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = args
@@ -314,6 +418,11 @@ enum Shell {
         process.standardError = err
         do { try process.run() } catch {
             return Result(status: -1, out: Data(), err: error.localizedDescription)
+        }
+        if let timeout {
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [process] in
+                if process.isRunning { process.terminate() }
+            }
         }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         let errData = err.fileHandleForReading.readDataToEndOfFile()

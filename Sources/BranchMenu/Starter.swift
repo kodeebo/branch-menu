@@ -6,6 +6,12 @@ enum Starter {
         var errorDescription: String? { message }
     }
 
+    /// Opens a new Claude app session with `text` filled in on another machine over SSH.
+    @MainActor
+    static func startOverSSH(host: String, folder: String, text: String) {
+        Focus.newSSHSession(host: host, folder: folder, text: text)
+    }
+
     /// Opens a new Claude app session with `text` filled in, in the repo or in a worktree for `worktreeBranch`.
     @MainActor
     static func start(repoRoot: String, worktreeBranch: String?, text: String) async throws {

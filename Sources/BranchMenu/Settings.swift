@@ -28,10 +28,19 @@ enum Settings {
         static let hotKeyCode = "hotKeyCode"
         static let hotKeyModifiers = "hotKeyModifiers"
         static let hotKeyLabel = "hotKeyLabel"
+        static let projectKey = "projectKey"
+        static let projectName = "projectName"
+        static let prFilter = "prFilter"
+        static let showsToday = "showsToday"
+        static let summaryEnabled = "summaryEnabled"
+        static let windowMode = "windowMode"
+        /// "local", or the SSH host new sessions last started on.
+        static let startTarget = "startTarget"
     }
 
-    /// ⌘B, as a Carbon key code and modifier mask.
-    static let defaultHotKey = (code: 11, modifiers: 256, label: "⌘B")
+    /// ⌥⌘Space (kVK_Space, cmdKey | optionKey). macOS gives it to "Show Finder search window"
+    /// until that is turned off under Keyboard Shortcuts › Spotlight.
+    static let defaultHotKey = (code: 49, modifiers: 2304, label: "⌥⌘Space")
 
     static let defaultIssueTemplate = """
         Work on {repo}#{number}: {title}
@@ -69,6 +78,8 @@ enum Settings {
     static var worktreeBranchPattern: String {
         defaults.string(forKey: Key.worktreeBranchPattern).flatMap { $0.isEmpty ? nil : $0 } ?? defaultBranchPattern
     }
+    static var summaryEnabled: Bool { defaults.object(forKey: Key.summaryEnabled) as? Bool ?? true }
+
     /// Claude app sessions active within this many days are listed (starred ones always).
     static var sessionDays: Int {
         let days = defaults.integer(forKey: Key.sessionDays)
