@@ -656,14 +656,24 @@ private struct IssueRow: View {
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 TitleLine(number: issue.number, title: issue.title, style: style)
-                Text(meta)
+                (statusText + Text(verbatim: meta).foregroundStyle(style.secondary))
                     .font(.system(size: 11))
-                    .foregroundStyle(style.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
             SessionsControl(model: model, item: item, style: style, startTitle: "Start now")
         }
+    }
+
+    /// The board status, coloured by what it means for starting work.
+    private var statusText: Text {
+        guard let status = issue.boardStatus else { return Text(verbatim: "") }
+        let color: Color = switch issue.stage {
+        case .blocked: StatusColor.red
+        case .notStarted: StatusColor.green
+        case .underway: StatusColor.amber
+        }
+        return Text(verbatim: status).foregroundStyle(style.tint(color)) + Text(verbatim: meta.isEmpty ? "" : "  ")
     }
 
     private var meta: String {
@@ -673,7 +683,7 @@ private struct IssueRow: View {
             parts.append("PR " + item.linkedPRNumbers.map { "#\($0)" }.joined(separator: ", "))
         }
         parts.append(contentsOf: issue.labels.prefix(2))
-        return parts.isEmpty ? "no labels" : parts.joined(separator: " · ")
+        return parts.isEmpty && issue.boardStatus == nil ? "no labels" : parts.joined(separator: " · ")
     }
 }
 

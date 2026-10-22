@@ -48,13 +48,16 @@ enum NextUp {
                            reason: "@\(pr.authorLogin) · waiting \(age(pr.createdAt))")
             }
 
+        // Only issues nothing has started on: no PR, no session, and Ready (or no status) on the board.
         let start: [NextUpItem] = issues
             .filter { $0.linkedSessions.isEmpty && $0.linkedPRNumbers.isEmpty }
-            .prefix(2)
-            .compactMap { item in
-                guard case .issue(let issue) = item.kind else { return nil }
-                return NextUpItem(kind: .start, item: item, action: "Start #\(issue.number)", title: issue.title, reason: "assigned, no session yet")
+            .compactMap { item -> NextUpItem? in
+                guard case .issue(let issue) = item.kind, issue.stage == .notStarted else { return nil }
+                let reason = issue.boardStatus.map { "\($0) on the board, no session yet" } ?? "assigned, no session yet"
+                return NextUpItem(kind: .start, item: item, action: "Start #\(issue.number)", title: issue.title, reason: reason)
             }
+            .prefix(2)
+            .map { $0 }
 
         return Array((merge + answer + fix + reviews + start).prefix(limit))
     }

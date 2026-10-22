@@ -158,8 +158,20 @@ struct Issue: Identifiable, Hashable, Sendable {
     let labels: [String]
     let url: URL
     let updatedAt: Date
+    /// The issue's status on its GitHub project board ("Ready", "Blocked", "In dev review").
+    let boardStatus: String?
 
     var id: String { "issue:\(repo.key)#\(number)" }
+
+    enum Stage { case notStarted, blocked, underway }
+
+    /// Where the board says work stands. No board status counts as not started.
+    var stage: Stage {
+        guard let status = boardStatus?.lowercased() else { return .notStarted }
+        if status.contains("block") || status.contains("wait") || status.contains("hold") { return .blocked }
+        let fresh = ["ready", "todo", "to do", "backlog", "new", "triage", "next", "planned", "icebox", "inbox"]
+        return fresh.contains { status.contains($0) } ? .notStarted : .underway
+    }
 }
 
 struct RepoGitHubData: Sendable {

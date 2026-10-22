@@ -28,7 +28,7 @@ enum GitHub {
                                  "--json", "number,title,headRefName,author,url,createdAt"])
         async let viewer = gh_(["api", "user", "--jq", ".login"])
         async let issues = gh_(["issue", "list", "--assignee", "@me", "--state", "open", "--limit", "50",
-                                "--json", "number,title,labels,url,updatedAt"])
+                                "--json", "number,title,labels,url,updatedAt,projectItems"])
 
         let allResult = await all
         guard allResult.status == 0 else {
@@ -94,7 +94,8 @@ enum GitHub {
                 title: issue.title,
                 labels: issue.labels.map(\.name),
                 url: url,
-                updatedAt: issue.updatedAt ?? .distantPast
+                updatedAt: issue.updatedAt ?? .distantPast,
+                boardStatus: (issue.projectItems ?? []).lazy.compactMap { $0.status?.name }.first
             )
         }
         return data
@@ -198,10 +199,15 @@ private struct GHPR: Decodable {
 
 private struct GHIssue: Decodable {
     struct Label: Decodable { let name: String }
+    struct ProjectItem: Decodable {
+        struct Status: Decodable { let name: String? }
+        let status: Status?
+    }
 
     let number: Int
     let title: String
     let labels: [Label]
     let url: String
     let updatedAt: Date?
+    let projectItems: [ProjectItem]?
 }

@@ -160,7 +160,7 @@ enum Linker {
         overview.issues = issues.map { issue in
             OverviewItem(
                 id: issue.id, kind: .issue(issue), column: .issues, section: "Assigned to me", repo: issue.repo,
-                searchText: "#\(issue.number) \(issue.title) \(issue.labels.joined(separator: " ")) \(issue.repo.name)".lowercased()
+                searchText: "#\(issue.number) \(issue.title) \(issue.labels.joined(separator: " ")) \(issue.boardStatus ?? "") \(issue.repo.name)".lowercased()
             )
         }
 
