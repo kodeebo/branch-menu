@@ -8,7 +8,6 @@ struct SettingsView: View {
     let suspendHotKey: () -> Void
 
     @AppStorage(Settings.Key.sessionDays) private var sessionDays = 7
-    @AppStorage(Settings.Key.summaryEnabled) private var summaryEnabled = true
     @AppStorage(Settings.Key.issueTemplate) private var issueTemplate = Settings.defaultIssueTemplate
     @AppStorage(Settings.Key.prTemplate) private var prTemplate = Settings.defaultPRTemplate
     @AppStorage(Settings.Key.reviewTemplate) private var reviewTemplate = Settings.defaultReviewTemplate
@@ -79,15 +78,6 @@ struct SettingsView: View {
                     Text("Show Claude app sessions active in the last \(sessionDays) day\(sessionDays == 1 ? "" : "s")")
                 }
                 Text("Starred sessions always show; archived ones never do.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Next up") {
-                Toggle("Write a short summary with Claude (Sonnet)", isOn: $summaryEnabled)
-                Text(Assistant.cliPath == nil
-                     ? "Needs the Claude Code CLI (claude) installed."
-                     : "Runs `claude -p` on your Claude login when the panel opens, at most every 10 minutes, and on ↻. No tools, no saved session.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

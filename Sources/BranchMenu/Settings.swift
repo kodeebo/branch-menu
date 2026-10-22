@@ -32,7 +32,6 @@ enum Settings {
         static let projectName = "projectName"
         static let prFilter = "prFilter"
         static let showsToday = "showsToday"
-        static let summaryEnabled = "summaryEnabled"
         static let windowMode = "windowMode"
         /// "local", or the SSH host new sessions last started on.
         static let startTarget = "startTarget"
@@ -78,7 +77,6 @@ enum Settings {
     static var worktreeBranchPattern: String {
         defaults.string(forKey: Key.worktreeBranchPattern).flatMap { $0.isEmpty ? nil : $0 } ?? defaultBranchPattern
     }
-    static var summaryEnabled: Bool { defaults.object(forKey: Key.summaryEnabled) as? Bool ?? true }
 
     /// Claude app sessions active within this many days are listed (starred ones always).
     static var sessionDays: Int {

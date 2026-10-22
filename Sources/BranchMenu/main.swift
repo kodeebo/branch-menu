@@ -1,5 +1,11 @@
 import AppKit
 
+// `--write-iconset <folder>` renders the app icon for scripts/bundle.sh and quits.
+if let index = CommandLine.arguments.firstIndex(of: "--write-iconset"), index + 1 < CommandLine.arguments.count {
+    try BranchMark.writeIconset(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+    exit(0)
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

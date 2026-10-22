@@ -116,46 +116,14 @@ private struct NextUpCard: View {
     let model: OverviewModel
 
     var body: some View {
-        let assistant = model.assistant
         let items = model.nextUp
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "sparkle")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color(light: 0xD97757, dark: 0xE8916F))
                 Text("Next up").font(.system(size: 12.5, weight: .semibold))
-                Spacer()
-                if assistant.isRunning {
-                    ProgressView().controlSize(.mini)
-                    Text("Summarizing…")
-                } else if let error = assistant.error {
-                    Text(error).foregroundStyle(StatusColor.red).lineLimit(1).help(error)
-                } else if let updated = assistant.updatedAt {
-                    Text("by Claude · \(age(updated) == "now" ? "just now" : "\(age(updated)) ago")")
-                }
-                if assistant.isAvailable && Settings.summaryEnabled {
-                    Button {
-                        model.refreshSummary(force: true)
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderless)
-                    .pointerStyle(.link)
-                    .help("Write the summary again")
-                    .disabled(assistant.isRunning)
+                if !items.isEmpty {
+                    Text(verbatim: "\(items.count)").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             }
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-
-            if let text = assistant.text, Settings.summaryEnabled {
-                Text(text)
-                    .font(.system(size: 13))
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-
             if items.isEmpty {
                 Text(model.store.overview.githubLoaded ? "Nothing to merge, answer or review." : "Loading from GitHub…")
                     .font(.system(size: 12.5))
@@ -217,7 +185,9 @@ private struct NextUpRow: View {
         switch next.kind {
         case .merge:
             return ("Open PR", { model.openOnGitHub(item) })
-        case .answer, .fixChecks:
+        case .answer:
+            return ("Open PR", { model.openOnGitHub(item) })
+        case .fixChecks:
             if let session { return ("Resume", { model.open(session) }) }
             return ("Start now", { model.startNew(item) })
         case .review:

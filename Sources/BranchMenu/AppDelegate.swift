@@ -38,14 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKey = HotKey { [weak self] in self?.toggleOverview() }
         let shortcut = Settings.hotKey
         hotKey?.register(keyCode: shortcut.code, modifiers: shortcut.modifiers)
-        store.onChange = { [weak self] in
-            guard let self else { return }
-            self.updateStatusItem()
-            // Keep Next up current while it is on screen; the assistant skips unchanged state.
-            if self.panel?.isVisible == true || self.window?.isVisible == true {
-                self.model.refreshSummary(force: false)
-            }
-        }
+        store.onChange = { [weak self] in self?.updateStatusItem() }
         store.startPolling()
         if UserDefaults.standard.bool(forKey: Settings.Key.windowMode) { openWindow() }
 
@@ -56,16 +49,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 await store.refreshAndWait()
                 panel.show()
+                if args.contains("--hover"), let item = model.items(.sessions).first(where: {
+                    if case .session(let s) = $0.kind { s.recap != nil } else { false }
+                }), case .session(let session) = item.kind {
+                    // Roughly where the first rows of the Sessions column sit.
+                    model.hover = HoverTarget(session: session, frame: CGRect(x: 16, y: 420, width: 380, height: 54))
+                }
                 if args.contains("--compose") {
                     let issue = model.items(.issues).first { $0.linkedSessions.isEmpty }
                     model.startNew(issue)
                 }
                 if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
                     try? await Task.sleep(for: .seconds(1))
-                    // Let the Next up summary land first (it takes a few seconds).
-                    for _ in 0..<60 where model.assistant.isRunning {
-                        try? await Task.sleep(for: .milliseconds(500))
-                    }
                     panel.snapshot(to: URL(fileURLWithPath: args[index + 1]))
                     exit(0)
                 }
@@ -78,8 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "Branch Menu")
-            button.imagePosition = .imageLeading
+            button.image = BranchMark.statusImage(waiting: 0)
             button.target = self
             button.action = #selector(statusItemClicked(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -132,7 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusItem() {
         let waiting = store.overview.waitingCount
-        statusItem?.button?.title = waiting > 0 ? " \(waiting)" : ""
+        statusItem?.button?.image = BranchMark.statusImage(waiting: waiting)
         statusItem?.button?.toolTip = waiting > 0
             ? "\(waiting) session\(waiting == 1 ? "" : "s") waiting for you · \(Settings.hotKey.label)"
             : "Branch Menu · \(Settings.hotKey.label)"
@@ -212,6 +206,10 @@ enum Dump {
     @MainActor
     static func print(_ overview: Overview) {
         for error in overview.errors { Swift.print("! \(error)") }
+        Swift.print("== Next up")
+        for next in NextUp.items(prs: overview.prs, issues: overview.issues) {
+            Swift.print("  \(next.action) \(next.title.prefix(50))  [\(next.reason)]")
+        }
         for column in Column.allCases {
             Swift.print("\n== \(column.title)")
             var section = ""
@@ -221,6 +219,9 @@ enum Dump {
                     Swift.print("  -- \(section)")
                 }
                 Swift.print("  \(describe(item))")
+                if case .session(let s) = item.kind, let recap = s.recap {
+                    Swift.print("       recap: \(recap.prefix(140).replacingOccurrences(of: "\n", with: " "))…")
+                }
                 let sessions = item.linkedSessions.map(\.name)
                 if case .session = item.kind {} else if !sessions.isEmpty {
                     Swift.print("       sessions: \(sessions.joined(separator: " | "))")

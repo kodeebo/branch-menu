@@ -74,6 +74,7 @@ final class AppStore {
         sessions = merged.map { session in
             var session = session
             session.recordedBranch = transcriptCache[session.id]?.branch
+            if let recap = transcriptCache[session.id]?.recap { session.recap = recap }
             if session.status != .waiting, let reason = Self.waitingReason(session, transcriptCache[session.id]?.pendingTool, now: now) {
                 session.status = .waiting
                 session.waitingFor = reason
@@ -227,7 +228,7 @@ final class AppStore {
                 updatedAt: app.lastActivity, host: claude, isLive: false, sshHost: app.sshHost,
                 isStarred: app.isStarred, appPRNumbers: app.prNumbers, appPRRepo: app.prRepo, appBranch: app.branch,
                 writtenBranches: app.writtenBranches, summary: app.summary?.detail, suggestion: app.suggestion,
-                isInAppList: true, lastTurnEnd: app.lastTurnEnd
+                isInAppList: true, lastTurnEnd: app.lastTurnEnd, recap: app.turnReport
             )
         }
         for process in live {

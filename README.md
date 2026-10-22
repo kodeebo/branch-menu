@@ -3,7 +3,8 @@
 An overview of your Claude Code sessions, your pull requests and your GitHub issues in one panel,
 with a quick way to switch to the right session or start a new one.
 
-Open it by clicking the branch icon in the menu bar or pressing **⌥⌘Space** anywhere (change it in Settings). macOS uses ⌥⌘Space for
+Open it by clicking the branch icon in the menu bar (an orange count next to it says how many
+sessions wait for input) or pressing **⌥⌘Space** anywhere (change it in Settings). macOS uses ⌥⌘Space for
 "Show Finder search window", so turn that off first: System Settings › Keyboard › Keyboard Shortcuts ›
 Spotlight. It opens
 centered on the screen with the mouse.
@@ -21,14 +22,16 @@ Above the columns, **Today** (⌘T to hide) shows:
 
 - **Waiting for you:** sessions that stopped on a question, an approval or a review, with what
   each one needs, taken from the Claude app's own wrap-up of the session.
-- **Next up:** what to merge (approved and green), answer (new comments or change requests since
-  your last push), fix (failing checks), review (oldest request first) and start (assigned issues
-  with nothing yet), each with a button. Above the list, Claude (Sonnet, through `claude -p` on
-  your own login) writes two or three sentences on what to do first. Turn that off in Settings.
-- **Notes:** one running notes file. Lines starting with `[ ]` become to-dos you can tick off;
-  ⌘N adds one. **Archive** moves the notes to `Archive/<date>.md` and starts empty. Files live in
-  `~/Library/Application Support/Branch Menu/`.
+- **Next up:** what to merge (approved and green), answer (comments or change requests from people
+  since your last push; bots don't count), fix (failing checks), review (oldest request first) and
+  start (assigned issues with nothing yet), each with a button.
+- **Notes:** Markdown notes in `~/Library/Application Support/Branch Menu/Notes/`, one open at a
+  time. Click the title to rename the note, and use the ⌄ menu to switch notes or start a new one.
+  Lines starting with `[ ]` become to-dos you can tick off; ⌘N adds one. **Archive** moves the text
+  to `Archive/<title> <date>.md` and empties the note.
 - Which branch each repo's main checkout is on, and how many files are changed there.
+
+Hovering a session shows its recap: the paragraph the Claude app wrote at the end of its last turn on what it did and where things stand.
 
 Pointing at a row highlights everything linked to it. For example, an issue lights up its PR and
 the sessions working on either.

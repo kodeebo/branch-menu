@@ -19,12 +19,13 @@ final class OverviewModel {
     private(set) var prFilter: PRFilter = .all
     /// PR and issue rows whose session list is open.
     private(set) var expanded: Set<String> = []
+    /// The session whose hover card is showing.
+    var hover: HoverTarget?
     /// A short message in the footer, e.g. after a checkout.
     private(set) var toast: (text: String, isError: Bool)?
     /// The Today strip above the columns (⌘T).
     private(set) var showsToday: Bool
     let notes = NotesStore()
-    let assistant = Assistant()
 
     @ObservationIgnored var onClose: (() -> Void)?
     @ObservationIgnored var onOpenSettings: (() -> Void)?
@@ -70,23 +71,6 @@ final class OverviewModel {
         }
     }
 
-    func refreshSummary(force: Bool) {
-        // A summary of half-loaded data would say there is nothing to do, and stick.
-        guard Settings.summaryEnabled, store.overview.githubLoaded, !store.isFetchingGitHub else { return }
-        let sessions = waitingItems.compactMap { item -> LiveSession? in
-            if case .session(let s) = item.kind { s } else { nil }
-        }
-        let prs = projectItems(.prs)
-        let mine = prs.filter { if case .myPR = $0.kind { true } else { false } }.count
-        let state = NextUp.describe(
-            project: projectName, local: localCheckouts, waiting: sessions, next: nextUp,
-            counts: (mine, prs.count - mine, projectItems(.issues).count)
-        )
-        let local = localCheckouts.map { "\($0.0.key)@\($0.1.branch)" }
-        let fingerprint = (nextUp.map(\.id) + sessions.map(\.id) + local).joined(separator: ",")
-        assistant.refresh(state: state, fingerprint: fingerprint, force: force)
-    }
-
     // MARK: Items and selection
 
     /// The column's rows in the chosen project, before search and the PR pills.
@@ -117,7 +101,6 @@ final class OverviewModel {
         projectName = repo?.name
         UserDefaults.standard.set(projectKey, forKey: Settings.Key.projectKey)
         UserDefaults.standard.set(projectName, forKey: Settings.Key.projectName)
-        refreshSummary(force: true)
     }
 
     func isExpanded(_ item: OverviewItem) -> Bool { expanded.contains(item.id) }
@@ -176,14 +159,12 @@ final class OverviewModel {
 
     func prepareForShow() {
         composer = nil
+        hover = nil
         notes.isEditing = false
+        notes.isRenaming = false
         query = ""
         focusToken += 1
-        let fetches = store.fetchGitHub(maxAge: 60)
-        Task {
-            for fetch in fetches { await fetch.value }
-            refreshSummary(force: false)
-        }
+        store.fetchGitHub(maxAge: 60)
     }
 
     /// The row's main action: a session opens in the Claude app (or its terminal); a PR or
@@ -253,12 +234,8 @@ final class OverviewModel {
 
     /// Sessions refresh every 2 seconds on their own; this also refetches GitHub right away.
     func refreshAll() {
-        let fetches = store.fetchGitHub(maxAge: 0)
-        Task {
-            await store.refresh()
-            for fetch in fetches { await fetch.value }
-            refreshSummary(force: true)
-        }
+        store.fetchGitHub(maxAge: 0)
+        Task { await store.refresh() }
     }
 
     /// Switches the repo's main checkout to the PR's branch. Git never drops uncommitted changes
@@ -277,6 +254,8 @@ final class OverviewModel {
             }
         }
     }
+
+    func flash(_ text: String) { show(text, isError: true) }
 
     private func show(_ text: String, isError: Bool) {
         toast = (text, isError)
@@ -302,9 +281,10 @@ final class OverviewModel {
         let code = Int(event.keyCode)
         let isReturn = code == kVK_Return || code == kVK_ANSI_KeypadEnter
 
-        if notes.isEditing {
+        if notes.isEditing || notes.isRenaming {
             guard code == kVK_Escape else { return false }
             notes.isEditing = false
+            notes.isRenaming = false
             focusToken += 1
             return true
         }

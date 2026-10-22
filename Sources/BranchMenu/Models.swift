@@ -58,6 +58,8 @@ struct LiveSession: Identifiable, Hashable, Sendable {
     var recordedBranch: String?
     /// When the Claude app last saw a turn end (Claude app sessions).
     var lastTurnEnd: Date?
+    /// A few sentences on what the last turn did and where things stand.
+    var recap: String?
 
     var isClaudeApp: Bool { entrypoint == "claude-desktop" }
 }

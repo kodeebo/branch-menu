@@ -23,11 +23,13 @@ struct OverviewView: View {
             Divider()
             Footer(model: model)
         }
+        .overlay { HoverLayer(model: model) }
         .overlay {
             if let composer = model.composer {
                 ComposerView(model: model, composer: composer)
             }
         }
+        .coordinateSpace(name: HoverLayer.space)
         .onChange(of: model.focusToken, initial: true) { searchFocused = true }
         // A light wash over the blurred background, so the panel reads lighter.
         .background(Color(light: 0xFAFAFC, dark: 0x1E1E20).opacity(0.72))
@@ -360,7 +362,7 @@ private struct RowView: View {
             }
             .onTapGesture { model.activate(item) }
             .pointerStyle(.link)
-            .help(isSession ? "" : "Open on GitHub")
+            .modifier(RowHover(model: model, item: item))
             .contextMenu {
                 if case .session(let session) = item.kind {
                     Button("Open session") { model.open(session) }
@@ -387,6 +389,7 @@ private struct RowView: View {
     private var isSession: Bool {
         if case .session = item.kind { true } else { false }
     }
+
 
     private var isPR: Bool {
         switch item.kind {
@@ -470,7 +473,6 @@ private struct SessionRow: View {
                     .foregroundStyle(style.secondary)
             }
         }
-        .help("\(session.isClaudeApp ? "Claude app" : session.host?.name ?? "Terminal") · \(session.cwd)")
     }
 
     private var meta: String {
@@ -537,6 +539,7 @@ struct WaitingPill: View {
         .padding(.vertical, 8)
         .background(Self.fill, in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.accentColor, lineWidth: isSelected ? 2 : 0))
+        .sessionHoverCard(session, model: model)
         .padding(.bottom, 4)
     }
 
@@ -674,6 +677,22 @@ private struct IssueRow: View {
     }
 }
 
+/// Session rows show the hover card; PR and issue rows say a click opens GitHub.
+private struct RowHover: ViewModifier {
+    let model: OverviewModel
+    let item: OverviewItem
+
+    func body(content: Content) -> some View {
+        if case .session(let session) = item.kind, session.status != .waiting || model.showsToday {
+            content.sessionHoverCard(session, model: model)
+        } else if case .session = item.kind {
+            content  // the waiting pill has its own
+        } else {
+            content.help("Open on GitHub")
+        }
+    }
+}
+
 /// The sessions under a PR or issue; each opens in the Claude app (or its terminal).
 private struct LinkedSessions: View {
     let model: OverviewModel
@@ -739,8 +758,7 @@ private struct LinkedSessionRow: View {
         .buttonStyle(.plain)
         .pointerStyle(.link)
         .onHover { hovering = $0 }
-        .help([session.waitingFor ?? session.summary, session.isClaudeApp ? "Open in the Claude app" : "Switch to \(session.host?.name ?? "the terminal")"]
-            .compactMap { $0 }.joined(separator: "\n"))
+        .sessionHoverCard(session, model: model)
     }
 }
 

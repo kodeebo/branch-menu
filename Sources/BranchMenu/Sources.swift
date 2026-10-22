@@ -86,6 +86,8 @@ enum AppSessionReader {
         let openQuestion: String?
         /// When the session's latest turn ended.
         let lastTurnEnd: Date?
+        /// What the app kept about the last turn, for when the transcript has no wrap-up recap.
+        let turnReport: String?
     }
 
     /// The Claude app's `postTurnSummary`: e.g. "blocked" with "approve PRs 1234 and 1235".
@@ -151,7 +153,8 @@ enum AppSessionReader {
             summary: summary(obj),
             suggestion: nonEmpty(obj["promptSuggestion"]),
             openQuestion: openQuestion(obj),
-            lastTurnEnd: (obj["lastTurnEdgeAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
+            lastTurnEnd: (obj["lastTurnEdgeAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) },
+            turnReport: nonEmpty(obj["lastTurnReport"]) ?? nonEmpty((obj["turnWrapUp"] as? [String: Any])?["description"])
         )
     }
 
@@ -251,6 +254,8 @@ enum TranscriptReader {
         let pendingTool: PendingTool?
         /// The question card the last turn ended with, while you have not replied.
         let openAsk: OpenAsk?
+        /// The paragraph the latest turn's wrap-up starts with: what it did and where things stand.
+        let recap: String?
     }
 
     /// The Claude app ends a turn with an `mcp__ccd_turn__wrap_up` call; when it carries `ask`,
@@ -277,19 +282,21 @@ enum TranscriptReader {
               let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? UInt64
         else { return nil }
         if let cached, cached.url == url, cached.size == size { return cached }
+        let wrapUp = latestWrapUp(in: url, size: size)
         return Entry(
             url: url, size: size, branch: lastBranch(in: url, size: size),
-            pendingTool: pendingTool(in: url, size: size), openAsk: openAsk(in: url, size: size)
+            pendingTool: pendingTool(in: url, size: size), openAsk: wrapUp.ask, recap: wrapUp.recap
         )
     }
 
-    /// Walks back from the end: the newest wrap-up with a question counts, unless you wrote
-    /// something after it (tool results don't count as writing).
-    nonisolated private static func openAsk(in url: URL, size: UInt64) -> OpenAsk? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    /// Walks back from the end to the newest wrap-up. Its recap always counts; its question only
+    /// if you have not written anything after it (tool results don't count as writing).
+    nonisolated private static func latestWrapUp(in url: URL, size: UInt64) -> (recap: String?, ask: OpenAsk?) {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return (nil, nil) }
         defer { try? handle.close() }
-        let offset = size > 512 * 1024 ? size - 512 * 1024 : 0
-        guard (try? handle.seek(toOffset: offset)) != nil, let data = try? handle.read(upToCount: Int(size - offset)) else { return nil }
+        let offset = size > 1024 * 1024 ? size - 1024 * 1024 : 0
+        guard (try? handle.seek(toOffset: offset)) != nil, let data = try? handle.read(upToCount: Int(size - offset)) else { return (nil, nil) }
+        var answered = false
         for line in data.split(separator: UInt8(ascii: "\n")).reversed() {
             guard let obj = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
                   let type = obj["type"] as? String, obj["isSidechain"] as? Bool != true
@@ -297,22 +304,25 @@ enum TranscriptReader {
             let content = (obj["message"] as? [String: Any])?["content"]
             if type == "user", obj["isMeta"] as? Bool != true {
                 // A typed message is a string or has text blocks; a tool result is not you writing.
-                if content is String { return nil }
-                if let blocks = content as? [[String: Any]], blocks.contains(where: { $0["type"] as? String == "text" }) { return nil }
+                if content is String { answered = true }
+                if let blocks = content as? [[String: Any]], blocks.contains(where: { $0["type"] as? String == "text" }) { answered = true }
             }
             guard type == "assistant", let blocks = content as? [[String: Any]] else { continue }
             for block in blocks.reversed() where block["type"] as? String == "tool_use" {
                 guard let name = block["name"] as? String, name.hasSuffix("turn__wrap_up") else { continue }
                 let input = block["input"] as? [String: Any] ?? [:]
-                guard let ask = (input["ask"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !ask.isEmpty else { return nil }
+                let recap = (input["recap"] as? String).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                guard !answered, let ask = (input["ask"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !ask.isEmpty else {
+                    return (recap, nil)
+                }
                 let options = (input["actions"] as? [[String: Any]] ?? []).compactMap { $0["label"] as? String }
                 let dates = ISO8601DateFormatter()
                 dates.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                 let at = (obj["timestamp"] as? String).flatMap(dates.date(from:)) ?? .distantPast
-                return OpenAsk(question: ask, options: options, at: at)
+                return (recap, OpenAsk(question: ask, options: options, at: at))
             }
         }
-        return nil
+        return (nil, nil)
     }
 
     /// The last message decides: an assistant tool call with no result after it is still pending

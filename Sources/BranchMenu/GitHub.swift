@@ -41,15 +41,20 @@ enum GitHub {
         data.prsByBranch = prsByBranch(allPRs)
         data.ownerRepo = allPRs.first?.url.flatMap(URL.init(string:)).flatMap(Template.ownerAndRepo)
         let me = Shell.lines(await viewer.out).first ?? ""
-        // Reviews and comments from others since your last push, per PR.
+        // Reviews and comments from other people since your last push, per PR. Bots (preview
+        // deploys, CI, automated reviewers) post plenty that needs no answer.
         var newFeedback: [Int: Int] = [:]
+        func byPerson(_ author: GHPR.Author?) -> Bool {
+            guard let author, author.login != me else { return false }
+            return !(author.isBot ?? false) && !Self.isBot(author.login)
+        }
         for pr in decode([GHPR].self, await feedback.out) ?? [] {
             let lastPush = pr.commits?.compactMap(\.committedDate).max() ?? .distantPast
             // Approvals need no answer; comments and change requests do.
             let reviews = (pr.latestReviews ?? []).filter {
-                $0.author?.login != me && $0.state != "APPROVED" && ($0.submittedAt ?? .distantPast) > lastPush
+                byPerson($0.author) && $0.state != "APPROVED" && ($0.submittedAt ?? .distantPast) > lastPush
             }
-            let comments = (pr.comments ?? []).filter { $0.author?.login != me && ($0.createdAt ?? .distantPast) > lastPush }
+            let comments = (pr.comments ?? []).filter { byPerson($0.author) && ($0.createdAt ?? .distantPast) > lastPush }
             newFeedback[pr.number] = reviews.count + comments.count
         }
         data.mine = (decode([GHPR].self, await mine.out) ?? []).compactMap { pr in
@@ -93,6 +98,13 @@ enum GitHub {
             )
         }
         return data
+    }
+
+    /// GitHub marks app accounts with "[bot]", but gh often reports them without it.
+    private static func isBot(_ login: String) -> Bool {
+        let name = login.lowercased()
+        return name.hasSuffix("[bot]") || name.hasSuffix("-bot") || name.hasSuffix("-connector")
+            || ["github-actions", "dependabot", "renovate", "vercel", "netlify", "codecov", "sonarcloud", "copilot"].contains(name)
     }
 
     /// Newest PR per head branch, except that an open one beats a newer merged or closed one.
@@ -149,6 +161,12 @@ private struct GHPR: Decodable {
     struct Author: Decodable {
         let login: String
         let name: String?
+        let isBot: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case login, name
+            case isBot = "is_bot"
+        }
     }
     struct Review: Decodable {
         let author: Author?
