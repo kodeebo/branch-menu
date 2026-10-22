@@ -19,6 +19,8 @@ final class OverviewModel {
     private(set) var prFilter: PRFilter = .all
     /// PR and issue rows whose session list is open.
     private(set) var expanded: Set<String> = []
+    /// A short message in the footer, e.g. after a checkout.
+    private(set) var toast: (text: String, isError: Bool)?
     /// The Today strip above the columns (⌘T).
     private(set) var showsToday: Bool
     let notes = NotesStore()
@@ -27,6 +29,7 @@ final class OverviewModel {
     @ObservationIgnored var onClose: (() -> Void)?
     @ObservationIgnored var onOpenSettings: (() -> Void)?
     @ObservationIgnored var onOpenWindow: (() -> Void)?
+    @ObservationIgnored var onOpenLog: (() -> Void)?
     /// Shown in the normal window rather than the floating panel.
     var isInWindow = false
     private var selection: [Column: String] = [:]
@@ -258,6 +261,32 @@ final class OverviewModel {
         }
     }
 
+    /// Switches the repo's main checkout to the PR's branch. Git never drops uncommitted changes
+    /// here: it carries them over, or refuses when they clash, and the footer says which.
+    func checkOut(_ item: OverviewItem) {
+        guard let repo = item.repo, let number = item.number, let branch = item.branch else { return }
+        let changes = store.localStates[repo.key]?.changes ?? 0
+        show("Checking out \(branch)…", isError: false)
+        Task {
+            switch await store.checkOut(number, branch: branch, in: repo) {
+            case .success(let now):
+                let carried = changes > 0 ? ", with your \(changes) changed file\(changes == 1 ? "" : "s")" : ""
+                show("\(repo.name) is now on \(now)\(carried)", isError: false)
+            case .failure(let failure):
+                show(failure.message, isError: true)
+            }
+        }
+    }
+
+    private func show(_ text: String, isError: Bool) {
+        toast = (text, isError)
+        let shown = text
+        Task {
+            try? await Task.sleep(for: .seconds(isError ? 8 : 4))
+            if toast?.text == shown { toast = nil }
+        }
+    }
+
     func openOnGitHub(_ item: OverviewItem?) {
         guard let url = item?.url else { return }
         NSWorkspace.shared.open(url)
@@ -331,6 +360,7 @@ final class OverviewModel {
             notes.addTodo()
         case "r": refreshAll()
         case ",": onOpenSettings?()
+        case "l": onOpenLog?()
         default: return false
         }
         return true

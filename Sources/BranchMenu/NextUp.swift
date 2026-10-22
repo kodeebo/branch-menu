@@ -136,6 +136,7 @@ final class Assistant {
                 ], in: NSTemporaryDirectory(), timeout: 90)
             }
             isRunning = false
+            if result.status != 0 { Log.error("summary", "claude -p failed: \(result.err.prefix(300))") }
             let answer = String(decoding: result.out, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             if result.status == 0, !answer.isEmpty {
                 text = answer

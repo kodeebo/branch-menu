@@ -8,7 +8,7 @@ enum FolderMode: String, CaseIterable, Identifiable, Sendable {
 
     var label: String {
         switch self {
-        case .mainCheckout: "Main checkout"
+        case .mainCheckout: "Claude's folder"
         case .newWorktree: "New worktree"
         }
     }

@@ -168,8 +168,20 @@ private struct Footer: View {
             Text("⌘↩ start session")
             Text("⌘O GitHub")
             Text("esc close")
+            Text("⌘L log")
             Spacer(minLength: 12)
-            if let error = model.store.overview.errors.first {
+            if let toast = model.toast {
+                Button {
+                    if toast.isError { model.onOpenLog?() }
+                } label: {
+                    Label(toast.text, systemImage: toast.isError ? "exclamationmark.triangle" : "checkmark.circle")
+                        .foregroundStyle(toast.isError ? StatusColor.red : StatusColor.green)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(toast.isError ? .link : nil)
+                .help(toast.isError ? "\(toast.text)\nClick to open the log  ⌘L" : toast.text)
+            } else if let error = model.store.overview.errors.first {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                     .lineLimit(1)
@@ -363,11 +375,24 @@ private struct RowView: View {
                 if let branch = item.branch {
                     Button("Copy branch name") { copy(branch) }
                 }
+                if isPR, let branch = item.branch {
+                    Divider()
+                    let current = item.repo.flatMap { model.store.localStates[$0.key]?.branch }
+                    Button(current == branch ? "Checked out locally" : "Check out \(branch) locally") { model.checkOut(item) }
+                        .disabled(current == branch)
+                }
             }
     }
 
     private var isSession: Bool {
         if case .session = item.kind { true } else { false }
+    }
+
+    private var isPR: Bool {
+        switch item.kind {
+        case .myPR, .review: true
+        default: false
+        }
     }
 
     @ViewBuilder
@@ -485,6 +510,13 @@ struct WaitingPill: View {
                     .opacity(0.85)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                if !session.replyOptions.isEmpty {
+                    Text(session.replyOptions.joined(separator: "  ·  "))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .opacity(0.65)
+                        .lineLimit(1)
+                        .help("The answers offered in the Claude app")
+                }
             }
             Spacer(minLength: 8)
             Button {

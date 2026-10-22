@@ -10,7 +10,7 @@ enum GitHub {
         guard let gh = ghPath else { return RepoGitHubData(error: "GitHub CLI (gh) is not installed") }
         let root = repo.root
         // Local-only and non-GitHub repos simply have nothing to show.
-        let remotes = await Background.run { Shell.run(GitProbe.git, ["-C", root, "remote", "-v"]) }
+        let remotes = await Background.run { Shell.run(GitProbe.git, ["-C", root, "remote", "-v"], probe: true) }
         guard String(decoding: remotes.out, as: UTF8.self).contains("github.com") else { return RepoGitHubData() }
         func gh_(_ args: [String]) async -> Shell.Result {
             await Background.run { Shell.run(gh, args, in: root) }

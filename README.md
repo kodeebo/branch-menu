@@ -43,6 +43,7 @@ the sessions working on either.
 | ⌘R | Refresh now (also the ↻ button; sessions refresh every 2 s, GitHub every 2 min) |
 | ⌘T / ⌘N | Show or hide Today / add a to-do |
 | → / ← | Show or hide a PR's or issue's sessions (with an empty search) |
+| ⌘L | Log |
 | ⌘, | Settings |
 | esc | Clear the search, then close |
 
@@ -51,7 +52,13 @@ the menu bar icon › Open as Window). It becomes a normal window, in the Dock a
 remembers its size and place; the shortcut and the menu bar icon then bring it to the front.
 Close it to go back to the panel.
 
-Right-clicking the menu bar icon gives Open as Window, Refresh, Settings and Quit.
+Right-clicking the menu bar icon gives Open as Window, Refresh, Settings, Show Log and Quit.
+
+**Log:** ⌘L in the overview, right-click › Show Log, or click an error in the footer. It lists
+every command the app runs (with exit code, time and error output), every link it opens in the
+Claude app, checkouts, summaries and sessions that start or stop waiting. "Show routine
+commands" adds the git and gh calls behind each refresh. The same lines go to
+`~/Library/Logs/Branch Menu/branch-menu.log`.
 
 ## Build and run
 
@@ -82,10 +89,17 @@ Requires macOS 15+, Xcode / Swift 6, and the GitHub CLI (`gh`) logged in.
 | PRs and issues | `gh pr list` / `gh issue list` per GitHub repo, cached 2 min, refreshed when the panel opens |
 | Host app | walk parent processes up to the first regular app |
 
-Waiting for you: the Claude app keeps pending permission prompts in memory only, so Branch Menu
-reads the end of a running session's transcript. A tool call with no result yet is waiting when it
-is a question (`AskUserQuestion`) or a plan (`ExitPlanMode`), when an instant tool (Edit, Write,
-Read, …) has had no result for 4 seconds, or when a Bash call has no command running under it.
+Waiting for you, from three signals:
+
+- **Question cards.** The Claude app ends a turn with an `mcp__ccd_turn__wrap_up` tool call; when it
+  carries `ask` (and `actions`, the answer buttons), the app shows a question card. A session waits
+  while the card belongs to its latest turn (`lastTurnEdgeAt` in the app's session file) and you
+  have not written since. Older cards are history.
+- **Open wrap-up questions** (`turnWrapUp.needsUser` in the app's session file), with the same
+  "you have not written since" rule.
+- **Pending prompts in a running session**, read from the end of its transcript: a question
+  (`AskUserQuestion`) or plan (`ExitPlanMode`), an instant tool (Edit, Write, Read, …) with no result
+  after 4 seconds, or a Bash call with no command running under it.
 
 Linking:
 

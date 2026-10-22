@@ -29,6 +29,8 @@ struct LiveSession: Identifiable, Hashable, Sendable {
     let hostSessionId: String?
     var status: SessionStatus
     var waitingFor: String?
+    /// Answer buttons on the question card the session waits on ("Yes, go ahead").
+    var replyOptions: [String] = []
     var updatedAt: Date
     var host: HostApp?
     var isLive: Bool
@@ -54,6 +56,8 @@ struct LiveSession: Identifiable, Hashable, Sendable {
     var isInAppList = false
     /// Branch recorded on the session's last transcript message; nil until read.
     var recordedBranch: String?
+    /// When the Claude app last saw a turn end (Claude app sessions).
+    var lastTurnEnd: Date?
 
     var isClaudeApp: Bool { entrypoint == "claude-desktop" }
 }

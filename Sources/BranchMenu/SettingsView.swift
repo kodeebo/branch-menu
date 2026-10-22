@@ -26,7 +26,7 @@ struct SettingsView: View {
                 }
                 TextField("Worktree branch", text: $branchPattern)
                     .font(.system(size: 12, design: .monospaced))
-                Text("For issues. Use {number} and {slug}. Worktrees go in <repo>/.claude/worktrees/. PRs use their own branch.")
+                Text("\u{201C}Claude's folder\u{201D} starts in the folder the Claude app has selected for new sessions, so it doesn't ask to allow it. A new worktree names its folder, and the app asks every time. Use {number} and {slug} in the branch; worktrees go in <repo>/.claude/worktrees/ and PRs use their own branch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

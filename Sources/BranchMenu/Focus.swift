@@ -10,15 +10,20 @@ enum Focus {
             return
         }
         if let pid = session.host?.pid, let app = NSRunningApplication(processIdentifier: pid) {
+            Log.info("focus", "activating \(app.localizedName ?? "app") for \"\(session.name)\"")
             app.activate()
+        } else {
+            Log.error("focus", "no app to switch to for \"\(session.name)\"")
         }
     }
 
     static let claudeAppURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.anthropic.claudefordesktop")
 
-    /// A new Claude app Code session in `folder`, with `text` in the prompt box.
-    static func newSession(folder: String, text: String) {
-        var items = [URLQueryItem(name: "folder", value: folder)]
+    /// A new Claude app Code session with `text` in the prompt box. Without a `folder`, the app
+    /// uses the folder its new-session screen has selected; a link that names one makes the app
+    /// ask you to allow that folder, every time.
+    static func newSession(folder: String?, text: String) {
+        var items = folder.map { [URLQueryItem(name: "folder", value: $0)] } ?? []
         if !text.isEmpty { items.append(URLQueryItem(name: "q", value: text)) }
         open("/new", items)
     }
@@ -37,6 +42,12 @@ enum Focus {
         components.host = "code"
         components.path = path
         components.queryItems = items + [URLQueryItem(name: "source", value: "url_external")]
-        if let url = components.url { NSWorkspace.shared.open(url) }
+        guard let url = components.url else {
+            Log.error("link", "could not build a claude:// link for \(path)")
+            return
+        }
+        let shown = url.absoluteString
+        Log.info("link", shown.count > 300 ? String(shown.prefix(300)) + "…" : shown)
+        NSWorkspace.shared.open(url)
     }
 }

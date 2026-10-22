@@ -90,6 +90,12 @@ struct ComposerView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
                     .focused($editorFocused)
 
+                if let rewritten = StarterText.forLink(composer.text) {
+                    Label("Links can't run slash commands in the Claude app, so this starts with \u{201C}\(rewritten.prefix { $0 != "\n" })\u{201D} and Claude uses the skill.", systemImage: "info.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
                 if let error = composer.error {
                     Text(error)
                         .font(.caption)
@@ -127,9 +133,10 @@ struct ComposerView: View {
     }
 
     private var folderPath: String {
-        let path = composer.folderMode == .newWorktree
-            ? Starter.worktreePath(repoRoot: composer.repo.root, branch: composer.branch)
-            : composer.repo.root
-        return (path as NSString).abbreviatingWithTildeInPath
+        guard composer.folderMode == .newWorktree else {
+            return "The folder selected in the Claude app (no Allow prompt)"
+        }
+        let path = Starter.worktreePath(repoRoot: composer.repo.root, branch: composer.branch)
+        return (path as NSString).abbreviatingWithTildeInPath + "  · the Claude app asks to allow it"
     }
 }

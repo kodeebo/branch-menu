@@ -21,6 +21,7 @@ final class AppStore {
     @ObservationIgnored private var discoveredFolders: [String] = []
     @ObservationIgnored private var lastDiscovery: Date?
     @ObservationIgnored private var localCheckedAt: Date?
+    @ObservationIgnored private var waitingIDs: Set<String> = []
     @ObservationIgnored private var github: [String: (data: RepoGitHubData, at: Date)] = [:]
     @ObservationIgnored private var githubInFlight: [String: Task<Void, Never>] = [:]
 
@@ -77,8 +78,26 @@ final class AppStore {
                 session.status = .waiting
                 session.waitingFor = reason
             }
+            // The question card at the end of the latest turn; a running turn has moved past it.
+            // Cards from earlier turns (or from before the app recorded turn ends) are history.
+            if session.status == .idle || session.status == .waiting,
+               let ask = transcriptCache[session.id]?.openAsk,
+               let turnEnd = session.lastTurnEnd, ask.at >= turnEnd.addingTimeInterval(-600) {
+                session.status = .waiting
+                session.waitingFor = ask.question
+                session.replyOptions = ask.options
+            }
             return session
         }
+        let waitingNow = Dictionary(uniqueKeysWithValues: sessions.filter { $0.status == .waiting }.map { ($0.id, $0) })
+        for (id, session) in waitingNow where !waitingIDs.contains(id) {
+            Log.info("waiting", "\"\(session.name)\" waits: \(session.waitingFor ?? "?")")
+        }
+        for id in waitingIDs where waitingNow[id] == nil {
+            Log.info("waiting", "\(sessions.first { $0.id == id }.map { "\"\($0.name)\"" } ?? id) no longer waits")
+        }
+        waitingIDs = Set(waitingNow.keys)
+
         var byKey: [String: RepoRef] = [:]
         for folder in folders {
             if let repo = gitCache[folder]?.info?.repo { byKey[repo.key] = repo }
@@ -121,6 +140,33 @@ final class AppStore {
         }
         isFetchingGitHub = !githubInFlight.isEmpty
         return tasks
+    }
+
+    /// Checks out a PR's branch in the repo's main checkout with `gh pr checkout`, which also
+    /// handles branches from forks. Returns git's or gh's complaint when it refuses.
+    func checkOut(_ number: Int, branch: String, in repo: RepoRef) async -> Result<String, Starter.Failure> {
+        guard let gh = GitHub.ghPath else { return .failure(Starter.Failure(message: "GitHub CLI (gh) is not installed")) }
+        let root = repo.root
+        Log.info("checkout", "PR #\(number) (\(branch)) in \((root as NSString).abbreviatingWithTildeInPath)")
+
+        // Git keeps a branch in one worktree at a time; say where it is instead of failing.
+        if let elsewhere = await Background.run({ Worktree.path(of: branch, repoRoot: root) }), elsewhere != root {
+            let place = (elsewhere as NSString).abbreviatingWithTildeInPath
+            Log.error("checkout", "\(branch) is already checked out in \(place)")
+            return .failure(Starter.Failure(message: "\(branch) is already checked out in \(place)"))
+        }
+
+        let result = await Background.run { Shell.run(gh, ["pr", "checkout", String(number)], in: root, timeout: 120) }
+        localCheckedAt = nil
+        await refresh()
+        let now = localStates[repo.key]?.branch
+        guard result.status == 0 else {
+            let reason = result.err.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n").last.map(String.init) ?? "gh pr checkout failed"
+            Log.error("checkout", "failed: \(reason)")
+            return .failure(Starter.Failure(message: reason))
+        }
+        Log.info("checkout", "done; \(repo.name) is on \(now ?? "?")")
+        return .success(now ?? branch)
     }
 
     /// For `--dump`: one full refresh, including GitHub.
@@ -176,11 +222,12 @@ final class AppStore {
         where !app.isArchived && (app.lastActivity > cutoff || app.isStarred) {
             byID[app.id] = LiveSession(
                 id: app.id, cliSessionId: app.cliSessionId, cwd: app.cwd, name: app.title,
-                entrypoint: "claude-desktop", hostSessionId: app.id, status: .idle, waitingFor: nil,
+                entrypoint: "claude-desktop", hostSessionId: app.id,
+                status: app.openQuestion == nil ? .idle : .waiting, waitingFor: app.openQuestion,
                 updatedAt: app.lastActivity, host: claude, isLive: false, sshHost: app.sshHost,
                 isStarred: app.isStarred, appPRNumbers: app.prNumbers, appPRRepo: app.prRepo, appBranch: app.branch,
                 writtenBranches: app.writtenBranches, summary: app.summary?.detail, suggestion: app.suggestion,
-                isInAppList: true
+                isInAppList: true, lastTurnEnd: app.lastTurnEnd
             )
         }
         for process in live {
@@ -188,8 +235,11 @@ final class AppStore {
                 byID[process.id] = process
                 continue
             }
-            session.status = process.status
-            session.waitingFor = process.waitingFor
+            // A running turn or a live prompt wins; an idle process keeps the app's open question.
+            if process.status != .idle || session.status != .waiting {
+                session.status = process.status
+                session.waitingFor = process.waitingFor
+            }
             session.processID = process.processID
             session.updatedAt = max(session.updatedAt, process.updatedAt)
             session.host = process.host ?? session.host

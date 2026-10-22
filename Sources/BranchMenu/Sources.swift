@@ -81,6 +81,11 @@ enum AppSessionReader {
         let summary: TurnSummary?
         /// The prompt the app suggests sending next.
         let suggestion: String?
+        /// A question the last turn ended on ("Go ahead with the plan?"), while you have not
+        /// written since.
+        let openQuestion: String?
+        /// When the session's latest turn ended.
+        let lastTurnEnd: Date?
     }
 
     /// The Claude app's `postTurnSummary`: e.g. "blocked" with "approve PRs 1234 and 1235".
@@ -144,8 +149,19 @@ enum AppSessionReader {
                 $0.split(separator: "\u{0}").last.map(String.init)
             },
             summary: summary(obj),
-            suggestion: nonEmpty(obj["promptSuggestion"])
+            suggestion: nonEmpty(obj["promptSuggestion"]),
+            openQuestion: openQuestion(obj),
+            lastTurnEnd: (obj["lastTurnEdgeAt"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
         )
+    }
+
+    /// The Claude app's wrap-up of a turn names what it needs from you in `needsUser`. It still
+    /// waits as long as you have not sent anything after that turn ended.
+    nonisolated private static func openQuestion(_ obj: [String: Any]) -> String? {
+        guard let question = nonEmpty((obj["turnWrapUp"] as? [String: Any])?["needsUser"]) else { return nil }
+        let lastActivity = (obj["lastActivityAt"] as? NSNumber)?.doubleValue ?? 0
+        let lastMessage = (obj["latestUserFrameAt"] as? NSNumber)?.doubleValue ?? 0
+        return lastMessage > lastActivity ? nil : question
     }
 
     /// Only a summary of the session's latest reply counts; an older one is out of date.
@@ -172,7 +188,7 @@ enum GitProbe {
     /// Repo, branch and worktree status for a directory, or nil when it is not in a git repo.
     /// Blocks on `git` subprocesses; call it through `Background.run`.
     nonisolated static func info(for cwd: String) -> GitInfo? {
-        let dirs = Shell.run(git, ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"])
+        let dirs = Shell.run(git, ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"], probe: true)
         let lines = Shell.lines(dirs.out)
         guard dirs.status == 0, lines.count >= 2 else { return nil }
         let commonDir = URL(fileURLWithPath: lines[0]).standardizedFileURL
@@ -180,8 +196,8 @@ enum GitProbe {
         let toplevel = URL(fileURLWithPath: lines[1]).standardizedFileURL
 
         // symbolic-ref also works on a branch with no commits yet; fall back to a short sha when detached.
-        let symbolic = Shell.run(git, ["-C", cwd, "symbolic-ref", "--short", "-q", "HEAD"])
-        let sha = Shell.run(git, ["-C", cwd, "rev-parse", "--short", "HEAD"])
+        let symbolic = Shell.run(git, ["-C", cwd, "symbolic-ref", "--short", "-q", "HEAD"], probe: true)
+        let sha = Shell.run(git, ["-C", cwd, "rev-parse", "--short", "HEAD"], probe: true)
         let branch = (symbolic.status == 0 ? Shell.lines(symbolic.out).first : nil)
             ?? (sha.status == 0 ? Shell.lines(sha.out).first.map { "detached @ \($0)" } : nil)
             ?? "detached HEAD"
@@ -199,7 +215,7 @@ enum GitProbe {
 extension GitProbe {
     /// The main checkout's branch and how many files are changed there.
     nonisolated static func localState(root: String) -> LocalState? {
-        let symbolic = Shell.run(git, ["-C", root, "symbolic-ref", "--short", "-q", "HEAD"])
+        let symbolic = Shell.run(git, ["-C", root, "symbolic-ref", "--short", "-q", "HEAD"], probe: true)
         guard let branch = symbolic.status == 0 ? Shell.lines(symbolic.out).first : "detached HEAD" else { return nil }
         let status = Shell.run(git, ["-C", root, "status", "--porcelain", "--untracked-files=normal"])
         return LocalState(branch: branch, changes: status.status == 0 ? Shell.lines(status.out).count : 0)
@@ -233,6 +249,16 @@ enum TranscriptReader {
         let branch: String?
         /// A tool call at the end of the transcript that has no result yet.
         let pendingTool: PendingTool?
+        /// The question card the last turn ended with, while you have not replied.
+        let openAsk: OpenAsk?
+    }
+
+    /// The Claude app ends a turn with an `mcp__ccd_turn__wrap_up` call; when it carries `ask`,
+    /// the app shows it as a question card with answer buttons (`actions`).
+    struct OpenAsk: Sendable {
+        let question: String
+        let options: [String]
+        let at: Date
     }
 
     struct PendingTool: Sendable {
@@ -251,7 +277,42 @@ enum TranscriptReader {
               let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? UInt64
         else { return nil }
         if let cached, cached.url == url, cached.size == size { return cached }
-        return Entry(url: url, size: size, branch: lastBranch(in: url, size: size), pendingTool: pendingTool(in: url, size: size))
+        return Entry(
+            url: url, size: size, branch: lastBranch(in: url, size: size),
+            pendingTool: pendingTool(in: url, size: size), openAsk: openAsk(in: url, size: size)
+        )
+    }
+
+    /// Walks back from the end: the newest wrap-up with a question counts, unless you wrote
+    /// something after it (tool results don't count as writing).
+    nonisolated private static func openAsk(in url: URL, size: UInt64) -> OpenAsk? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let offset = size > 512 * 1024 ? size - 512 * 1024 : 0
+        guard (try? handle.seek(toOffset: offset)) != nil, let data = try? handle.read(upToCount: Int(size - offset)) else { return nil }
+        for line in data.split(separator: UInt8(ascii: "\n")).reversed() {
+            guard let obj = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
+                  let type = obj["type"] as? String, obj["isSidechain"] as? Bool != true
+            else { continue }
+            let content = (obj["message"] as? [String: Any])?["content"]
+            if type == "user", obj["isMeta"] as? Bool != true {
+                // A typed message is a string or has text blocks; a tool result is not you writing.
+                if content is String { return nil }
+                if let blocks = content as? [[String: Any]], blocks.contains(where: { $0["type"] as? String == "text" }) { return nil }
+            }
+            guard type == "assistant", let blocks = content as? [[String: Any]] else { continue }
+            for block in blocks.reversed() where block["type"] as? String == "tool_use" {
+                guard let name = block["name"] as? String, name.hasSuffix("turn__wrap_up") else { continue }
+                let input = block["input"] as? [String: Any] ?? [:]
+                guard let ask = (input["ask"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !ask.isEmpty else { return nil }
+                let options = (input["actions"] as? [[String: Any]] ?? []).compactMap { $0["label"] as? String }
+                let dates = ISO8601DateFormatter()
+                dates.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let at = (obj["timestamp"] as? String).flatMap(dates.date(from:)) ?? .distantPast
+                return OpenAsk(question: ask, options: options, at: at)
+            }
+        }
+        return nil
     }
 
     /// The last message decides: an assistant tool call with no result after it is still pending
@@ -405,8 +466,10 @@ enum Shell {
 
     /// Runs a command to completion, or until `timeout` seconds pass. Blocking: call it through
     /// `Background.run`.
+    /// `probe`: a non-zero exit is an answer ("not a repo", "no such branch"), logged as routine.
     nonisolated static func run(
-        _ executable: String, _ args: [String], in directory: String? = nil, timeout: TimeInterval? = nil
+        _ executable: String, _ args: [String], in directory: String? = nil, timeout: TimeInterval? = nil,
+        probe: Bool = false
     ) -> Result {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -417,6 +480,7 @@ enum Shell {
         process.standardOutput = out
         process.standardError = err
         do { try process.run() } catch {
+            Log.error("shell", "could not run \(executable): \(error.localizedDescription)")
             return Result(status: -1, out: Data(), err: error.localizedDescription)
         }
         if let timeout {
@@ -424,10 +488,28 @@ enum Shell {
                 if process.isRunning { process.terminate() }
             }
         }
+        let started = Date()
         let data = out.fileHandleForReading.readDataToEndOfFile()
         let errData = err.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return Result(status: process.terminationStatus, out: data, err: String(decoding: errData, as: UTF8.self))
+        let result = Result(status: process.terminationStatus, out: data, err: String(decoding: errData, as: UTF8.self))
+        logged(executable, args, directory, result, Date().timeIntervalSince(started), probe: probe)
+        return result
+    }
+
+    nonisolated private static func logged(
+        _ executable: String, _ args: [String], _ directory: String?, _ result: Result, _ seconds: TimeInterval, probe: Bool
+    ) {
+        // Long arguments (a starter text, the summary prompt) are cut; the log is for what ran.
+        let arguments = args.map { $0.count > 120 ? String($0.prefix(120)) + "…" : $0 }.joined(separator: " ")
+        let place = directory.map { " in " + ($0 as NSString).abbreviatingWithTildeInPath } ?? ""
+        let line = "\((executable as NSString).lastPathComponent) \(arguments)\(place) → exit \(result.status), \(Int(seconds * 1000)) ms"
+        if result.status == 0 || probe {
+            Log.debug("shell", line)
+        } else {
+            let detail = result.err.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n").suffix(4).joined(separator: " | ")
+            Log.error("shell", detail.isEmpty ? line : "\(line): \(detail)")
+        }
     }
 
     nonisolated static func lines(_ data: Data) -> [String] {

@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
     private var settingsWindow: NSWindow?
+    private var logWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--dump") {
@@ -22,11 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        Log.info("app", "Branch Menu started (\(ProcessInfo.processInfo.operatingSystemVersionString))")
         installMainMenu()
         let panel = PanelController(model: model)
         self.panel = panel
         model.onOpenSettings = { [weak self] in self?.openSettings() }
         model.onOpenWindow = { [weak self] in self?.openWindow() }
+        model.onOpenLog = { [weak self] in self?.openLog() }
         // After opening a session or a link: the panel gets out of the way, the window stays.
         model.onClose = { [weak self] in
             if self?.window?.isVisible != true { self?.panel?.hide() }
@@ -92,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(withTitle: "Refresh", action: #selector(refreshAll), keyEquivalent: "")
             menu.addItem(.separator())
             menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+            menu.addItem(withTitle: "Show Log", action: #selector(openLog), keyEquivalent: "l")
             menu.addItem(withTitle: "Quit Branch Menu", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             for item in menu.items where item.action != #selector(NSApplication.terminate(_:)) { item.target = self }
             statusItem?.menu = menu
@@ -160,6 +164,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         settingsWindow?.center()
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func openLog() {
+        panel?.hide()
+        if logWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: LogView()))
+            window.title = "Branch Menu Log"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 900, height: 520))
+            window.isReleasedWhenClosed = false
+            window.setFrameAutosaveName("BranchMenuLog")
+            logWindow = window
+        }
+        NSApp.activate()
+        logWindow?.makeKeyAndOrderFront(nil)
     }
 
     /// A menu-bar-only app has no visible menu, but text fields still need an Edit menu
