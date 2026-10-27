@@ -22,6 +22,9 @@ final class AppStore {
     @ObservationIgnored private var lastDiscovery: Date?
     @ObservationIgnored private var localCheckedAt: Date?
     @ObservationIgnored private var waitingIDs: Set<String> = []
+    /// Waiting sessions you dismissed, by id, with what they waited on then.
+    @ObservationIgnored private var dismissedWaiting =
+        UserDefaults.standard.dictionary(forKey: Settings.Key.dismissedWaiting) as? [String: String] ?? [:]
     @ObservationIgnored private var github: [String: (data: RepoGitHubData, at: Date)] = [:]
     @ObservationIgnored private var githubInFlight: [String: Task<Void, Never>] = [:]
 
@@ -75,6 +78,8 @@ final class AppStore {
             var session = session
             session.recordedBranch = transcriptCache[session.id]?.branch
             if let recap = transcriptCache[session.id]?.recap { session.recap = recap }
+            // Terminal sessions only have a generated name ("folder-a3"); the app's list has the real title.
+            if !session.isInAppList, let title = transcriptCache[session.id]?.title { session.name = title }
             if session.status != .waiting, let reason = Self.waitingReason(session, transcriptCache[session.id]?.pendingTool, now: now) {
                 session.status = .waiting
                 session.waitingFor = reason
@@ -89,6 +94,19 @@ final class AppStore {
                 session.replyOptions = ask.options
             }
             return session
+        }
+        // A dismissed session waits again once it waits on something new.
+        let dismissedBefore = dismissedWaiting
+        for index in sessions.indices {
+            guard let dismissed = dismissedWaiting[sessions[index].id] else { continue }
+            if sessions[index].status == .waiting && dismissed == Self.waitingFingerprint(sessions[index]) {
+                Self.clearWaiting(&sessions[index])
+            } else {
+                dismissedWaiting[sessions[index].id] = nil
+            }
+        }
+        if dismissedWaiting != dismissedBefore {
+            UserDefaults.standard.set(dismissedWaiting, forKey: Settings.Key.dismissedWaiting)
         }
         let waitingNow = Dictionary(uniqueKeysWithValues: sessions.filter { $0.status == .waiting }.map { ($0.id, $0) })
         for (id, session) in waitingNow where !waitingIDs.contains(id) {
@@ -192,6 +210,27 @@ final class AppStore {
     }
 
     /// What a running session waits on, read from the tool call at the end of its transcript.
+    /// Stops showing the session as waiting until it waits on something else, e.g. one from an
+    /// account you signed out of or a session you deleted in the app.
+    func dismissWaiting(_ session: LiveSession) {
+        guard let index = sessions.firstIndex(where: { $0.id == session.id }), sessions[index].status == .waiting else { return }
+        dismissedWaiting[session.id] = Self.waitingFingerprint(sessions[index])
+        UserDefaults.standard.set(dismissedWaiting, forKey: Settings.Key.dismissedWaiting)
+        Log.info("waiting", "dismissed \"\(session.name)\"")
+        Self.clearWaiting(&sessions[index])
+        rebuild()
+    }
+
+    private static func waitingFingerprint(_ session: LiveSession) -> String {
+        "\(session.waitingFor ?? "")|\(Int(session.updatedAt.timeIntervalSince1970))"
+    }
+
+    private static func clearWaiting(_ session: inout LiveSession) {
+        session.status = .idle
+        session.waitingFor = nil
+        session.replyOptions = []
+    }
+
     /// The Claude app keeps pending permission prompts in memory only, so this is the outside view:
     /// questions always wait on you; instant tools still unanswered after a few seconds are
     /// waiting for permission; a Bash call is waiting only while no command runs under it.

@@ -23,7 +23,7 @@ struct LiveSession: Identifiable, Hashable, Sendable {
     /// Names the transcript in `~/.claude/projects`.
     let cliSessionId: String?
     let cwd: String
-    let name: String
+    var name: String
     let entrypoint: String
     /// `local_<uuid>`: the Claude app's own id for the session; used for deep links.
     let hostSessionId: String?
@@ -111,6 +111,12 @@ struct ChecksSummary: Hashable, Sendable {
     let failing: Int
 }
 
+/// A deployed preview of a PR, as a bot posts it in a PR comment ("My App").
+struct PreviewLink: Hashable, Sendable {
+    let name: String
+    let url: URL
+}
+
 enum ReviewDecision: String, Sendable {
     case approved = "APPROVED"
     case changesRequested = "CHANGES_REQUESTED"
@@ -132,6 +138,7 @@ struct MyPR: Identifiable, Hashable, Sendable {
     let updatedAt: Date
     /// Reviews and comments from others since your last push.
     let newFeedback: Int
+    let preview: PreviewLink?
 
     var id: String { "pr:\(repo.key)#\(number)" }
 }
@@ -146,6 +153,7 @@ struct ReviewRequest: Identifiable, Hashable, Sendable {
     let authorName: String?
     let url: URL
     let createdAt: Date
+    let preview: PreviewLink?
 
     var id: String { "pr:\(repo.key)#\(number)" }
 }

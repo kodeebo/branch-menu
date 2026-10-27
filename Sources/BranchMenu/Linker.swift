@@ -53,6 +53,14 @@ struct OverviewItem: Identifiable {
         case .issue(let issue): issue.url
         }
     }
+
+    var preview: PreviewLink? {
+        switch kind {
+        case .myPR(let pr): pr.preview
+        case .review(let pr): pr.preview
+        default: nil
+        }
+    }
 }
 
 struct Overview {

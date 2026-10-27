@@ -5,7 +5,7 @@ enum GitHub {
     static let ghPath = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
         .first { FileManager.default.isExecutableFile(atPath: $0) }
 
-    /// Everything the overview needs from one repo; the four `gh` calls run in parallel.
+    /// Everything the overview needs from one repo; the `gh` calls run in parallel.
     static func fetch(_ repo: RepoRef) async -> RepoGitHubData {
         guard let gh = ghPath else { return RepoGitHubData(error: "GitHub CLI (gh) is not installed") }
         let root = repo.root
@@ -26,6 +26,9 @@ enum GitHub {
                                   "--json", "number,latestReviews,comments,commits"])
         async let reviews = gh_(["pr", "list", "--search", "review-requested:@me", "--state", "open", "--limit", "50",
                                  "--json", "number,title,headRefName,author,url,createdAt"])
+        // Only for the preview link, so it may fail without losing the review requests.
+        async let reviewComments = gh_(["pr", "list", "--search", "review-requested:@me", "--state", "open", "--limit", "25",
+                                        "--json", "number,comments"])
         async let viewer = gh_(["api", "user", "--jq", ".login"])
         async let issues = gh_(["issue", "list", "--assignee", "@me", "--state", "open", "--limit", "50",
                                 "--json", "number,title,labels,url,updatedAt,projectItems"])
@@ -44,6 +47,7 @@ enum GitHub {
         // Reviews and comments from other people since your last push, per PR. Bots (preview
         // deploys, CI, automated reviewers) post plenty that needs no answer.
         var newFeedback: [Int: Int] = [:]
+        var previews: [Int: PreviewLink] = [:]
         func byPerson(_ author: GHPR.Author?) -> Bool {
             guard let author, author.login != me else { return false }
             return !(author.isBot ?? false) && !Self.isBot(author.login)
@@ -56,6 +60,10 @@ enum GitHub {
             }
             let comments = (pr.comments ?? []).filter { byPerson($0.author) && ($0.createdAt ?? .distantPast) > lastPush }
             newFeedback[pr.number] = reviews.count + comments.count
+            previews[pr.number] = preview(in: pr.comments ?? [])
+        }
+        for pr in decode([GHPR].self, await reviewComments.out) ?? [] {
+            previews[pr.number] = preview(in: pr.comments ?? [])
         }
         data.mine = (decode([GHPR].self, await mine.out) ?? []).compactMap { pr in
             guard let url = pr.url.flatMap(URL.init(string:)) else { return nil }
@@ -70,7 +78,8 @@ enum GitHub {
                 url: url,
                 closes: (pr.closingIssuesReferences ?? []).map(\.number),
                 updatedAt: pr.updatedAt ?? .distantPast,
-                newFeedback: newFeedback[pr.number] ?? 0
+                newFeedback: newFeedback[pr.number] ?? 0,
+                preview: previews[pr.number]
             )
         }
         data.reviews = (decode([GHPR].self, await reviews.out) ?? []).compactMap { pr in
@@ -83,10 +92,18 @@ enum GitHub {
                 authorLogin: pr.author?.login ?? "",
                 authorName: pr.author?.name.flatMap { $0.isEmpty ? nil : $0 },
                 url: url,
-                createdAt: pr.createdAt ?? .distantPast
+                createdAt: pr.createdAt ?? .distantPast,
+                preview: previews[pr.number]
             )
         }
-        data.issues = (decode([GHIssue].self, await issues.out) ?? []).compactMap { issue in
+        // The board status needs the token's read:project scope, which `gh auth login` leaves out.
+        var issuesResult = await issues
+        if issuesResult.status != 0, issuesResult.err.contains("read:project") {
+            issuesResult = await gh_(["issue", "list", "--assignee", "@me", "--state", "open", "--limit", "50",
+                                      "--json", "number,title,labels,url,updatedAt"])
+            data.error = "No board status for issues: run gh auth refresh -s read:project"
+        }
+        data.issues = (decode([GHIssue].self, issuesResult.out) ?? []).compactMap { issue in
             guard let url = URL(string: issue.url) else { return nil }
             return Issue(
                 repo: repo,
@@ -106,6 +123,20 @@ enum GitHub {
         let name = login.lowercased()
         return name.hasSuffix("[bot]") || name.hasSuffix("-bot") || name.hasSuffix("-connector")
             || ["github-actions", "dependabot", "renovate", "vercel", "netlify", "codecov", "sonarcloud", "copilot"].contains(name)
+    }
+
+    /// The first app in the newest preview comment, which a deploy bot posts as a table:
+    /// `| My App | https://myapp-pr-123-….run.app | ✅ Deployed |`.
+    private static func preview(in comments: [GHPR.Comment]) -> PreviewLink? {
+        for comment in comments.reversed() {
+            guard let body = comment.body, body.localizedCaseInsensitiveContains("preview") else { continue }
+            for line in body.split(separator: "\n") where line.hasPrefix("|") {
+                let cells = line.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+                guard cells.count >= 2, let url = URL(string: cells[1]), url.scheme == "https" else { continue }
+                return PreviewLink(name: cells[0], url: url)
+            }
+        }
+        return nil
     }
 
     /// Newest PR per head branch, except that an open one beats a newer merged or closed one.
@@ -177,6 +208,7 @@ private struct GHPR: Decodable {
     struct Comment: Decodable {
         let author: Author?
         let createdAt: Date?
+        let body: String?
     }
     struct Commit: Decodable { let committedDate: Date? }
 

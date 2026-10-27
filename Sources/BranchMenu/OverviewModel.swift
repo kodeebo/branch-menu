@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import CryptoKit
 import Observation
 
 /// UI state for the overview panel: search, selection, keyboard navigation and the start composer.
@@ -26,6 +27,9 @@ final class OverviewModel {
     /// The Today strip above the columns (⌘T).
     private(set) var showsToday: Bool
     let notes = NotesStore()
+    /// Next up rows you cleared, by row id, with a fingerprint of their PR or issue then.
+    private var dismissedNextUp =
+        UserDefaults.standard.dictionary(forKey: Settings.Key.dismissedNextUp) as? [String: String] ?? [:]
 
     @ObservationIgnored var onClose: (() -> Void)?
     @ObservationIgnored var onOpenSettings: (() -> Void)?
@@ -59,7 +63,22 @@ final class OverviewModel {
     }
 
     var nextUp: [NextUpItem] {
-        NextUp.items(prs: projectItems(.prs), issues: projectItems(.issues))
+        let all = NextUp.items(prs: projectItems(.prs), issues: projectItems(.issues), limit: .max)
+        return Array(all.filter { dismissedNextUp[$0.id] != Self.fingerprint($0) }.prefix(7))
+    }
+
+    /// Hides the row until its PR or issue changes.
+    func dismiss(_ next: NextUpItem) {
+        // Forget rows that can no longer show, so the list doesn't grow forever.
+        let current = Set(NextUp.items(prs: store.overview.items(.prs), issues: store.overview.items(.issues), limit: .max).map(\.id))
+        dismissedNextUp = dismissedNextUp.filter { current.contains($0.key) }
+        dismissedNextUp[next.id] = Self.fingerprint(next)
+        UserDefaults.standard.set(dismissedNextUp, forKey: Settings.Key.dismissedNextUp)
+    }
+
+    /// Everything known about the row's PR or issue: its checks, reviews, comments, update time.
+    private static func fingerprint(_ next: NextUpItem) -> String {
+        SHA256.hash(data: Data(String(describing: next.item.kind).utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// The chosen project's main checkout, or every repo that has something to show.
@@ -93,7 +112,16 @@ final class OverviewModel {
         }
         let tokens = query.lowercased().split(separator: " ")
         guard !tokens.isEmpty else { return items }
-        return items.filter { item in tokens.allSatisfy { item.searchText.contains($0) } }
+        // "123" or "#123" also finds what is linked to PR or issue 123, in every column.
+        let numbers = Set(tokens.compactMap { Int($0.trimmingCharacters(in: CharacterSet(charactersIn: "#"))) })
+        let words = tokens.filter { Int($0.trimmingCharacters(in: CharacterSet(charactersIn: "#"))) == nil }
+        let anchors = numbers.isEmpty ? [] : Set(
+            Column.allCases.flatMap { projectItems($0) }.filter { $0.number.map(numbers.contains) ?? false }.map(\.id)
+        )
+        return items.filter { item in
+            tokens.allSatisfy { item.searchText.contains($0) }
+                || (!item.linked.isDisjoint(with: anchors) && words.allSatisfy { item.searchText.contains($0) })
+        }
     }
 
     func setProject(_ repo: RepoRef?) {
@@ -131,6 +159,15 @@ final class OverviewModel {
     /// Rows name their repo only when the column mixes several.
     func showsRepo(in column: Column) -> Bool {
         Set(projectItems(column).compactMap { $0.repo?.key }).count > 1
+    }
+
+    /// Selects the item in its column, clearing the search or PR filter that would hide it.
+    func reveal(_ item: OverviewItem) {
+        query = ""
+        if item.column == .prs, prFilter != .all, !items(.prs).contains(where: { $0.id == item.id }) {
+            togglePRFilter(prFilter)
+        }
+        select(item)
     }
 
     func select(_ item: OverviewItem) {
@@ -268,6 +305,12 @@ final class OverviewModel {
 
     func openOnGitHub(_ item: OverviewItem?) {
         guard let url = item?.url else { return }
+        NSWorkspace.shared.open(url)
+        onClose?()
+    }
+
+    func openPreview(_ item: OverviewItem?) {
+        guard let url = item?.preview?.url else { return }
         NSWorkspace.shared.open(url)
         onClose?()
     }

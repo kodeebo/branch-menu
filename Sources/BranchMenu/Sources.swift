@@ -108,8 +108,12 @@ enum AppSessionReader {
 
     /// Keyed by file path. Only files whose modification date changed are parsed again.
     nonisolated static func read(cache: [String: Entry]) -> [String: Entry] {
+        // Accounts you signed out of keep their sessions on disk, but the app can't open them.
+        let root = signedInAccount()
+            .map { directory.appending(path: $0, directoryHint: .isDirectory) }
+            .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? directory
         guard let files = FileManager.default.enumerator(
-            at: directory, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
+            at: root, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]
         ) else { return [:] }
         var result: [String: Entry] = [:]
         for case let url as URL in files where url.pathExtension == "json" && url.lastPathComponent.hasPrefix("local_") {
@@ -121,6 +125,15 @@ enum AppSessionReader {
             }
         }
         return result
+    }
+
+    /// The account folder's name: the app keeps the signed-in account in its `config.json`.
+    nonisolated private static func signedInAccount() -> String? {
+        let config = directory.deletingLastPathComponent().appending(path: "config.json")
+        guard let data = try? Data(contentsOf: config),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        return obj["lastKnownAccountUuid"] as? String
     }
 
     nonisolated private static func parse(_ data: Data) -> AppSession? {
@@ -256,6 +269,8 @@ enum TranscriptReader {
         let openAsk: OpenAsk?
         /// The paragraph the latest turn's wrap-up starts with: what it did and where things stand.
         let recap: String?
+        /// The name you gave the session with /rename, else the one Claude Code generated.
+        let title: String?
     }
 
     /// The Claude app ends a turn with an `mcp__ccd_turn__wrap_up` call; when it carries `ask`,
@@ -285,7 +300,8 @@ enum TranscriptReader {
         let wrapUp = latestWrapUp(in: url, size: size)
         return Entry(
             url: url, size: size, branch: lastBranch(in: url, size: size),
-            pendingTool: pendingTool(in: url, size: size), openAsk: wrapUp.ask, recap: wrapUp.recap
+            pendingTool: pendingTool(in: url, size: size), openAsk: wrapUp.ask, recap: wrapUp.recap,
+            title: lastTitle(in: url, size: size)
         )
     }
 
@@ -377,6 +393,33 @@ enum TranscriptReader {
                let end = text[start...].firstIndex(of: "\"") {
                 let branch = String(text[start..<end])
                 return branch.isEmpty ? nil : branch
+            }
+            if offset == 0 { return nil }
+            chunk *= 4
+        }
+    }
+
+    /// Claude Code repeats `{"type":"ai-title","aiTitle":…}` lines through the transcript, and
+    /// `custom-title` ones after a /rename; the newest wins, a custom one within the same chunk.
+    nonisolated private static func lastTitle(in url: URL, size: UInt64) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let kinds = [("\"type\":\"custom-title\"", "customTitle"), ("\"type\":\"ai-title\"", "aiTitle")]
+        var chunk: UInt64 = 256 * 1024
+        while true {
+            let offset = size > chunk ? size - chunk : 0
+            guard (try? handle.seek(toOffset: offset)) != nil,
+                  let data = try? handle.read(upToCount: Int(size - offset))
+            else { return nil }
+            // The first line is cut off unless the chunk starts at the top.
+            let lines = data.split(separator: UInt8(ascii: "\n")).dropFirst(offset > 0 ? 1 : 0).reversed()
+            for (marker, key) in kinds {
+                let needle = Data(marker.utf8)
+                if let line = lines.first(where: { $0.range(of: needle) != nil }),
+                   let obj = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
+                   let title = (obj[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+                    return title
+                }
             }
             if offset == 0 { return nil }
             chunk *= 4

@@ -162,11 +162,48 @@ private struct NextUpRow: View {
             Button(button.title, action: button.action)
                 .controlSize(.small)
                 .pointerStyle(.link)
+            Button {
+                model.dismiss(next)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .pointerStyle(.link)
+            .help("Clear until this PR or issue changes")
+            .opacity(hovering ? 1 : 0)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 7).fill(hovering ? Color.primary.opacity(0.05) : .clear))
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .contextMenu { menu }
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        let item = next.item
+        let noun = item.column == .issues ? "issue" : "PR"
+        if let number = item.number, item.url != nil {
+            Button("Open \(noun) #\(number) on GitHub") { model.openOnGitHub(item) }
+        }
+        Button("Show in \(item.column.title)") { model.reveal(item) }
+        Divider()
+        if let session = item.linkedSessions.first {
+            Button("Open session “\(session.name)”") { model.open(session) }
+        }
+        Button("Start new session…") { model.startNew(item) }
+        if let url = item.url {
+            Divider()
+            Button("Copy link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            }
+        }
+        Divider()
+        Button("Clear until it changes") { model.dismiss(next) }
     }
 
     private var icon: (name: String, color: Color) {

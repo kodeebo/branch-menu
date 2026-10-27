@@ -17,7 +17,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--dump") {
             Task {
                 await store.refreshAndWait()
-                Dump.print(store.overview)
+                // `--query <text>` prints what a search shows in each column instead.
+                if let index = CommandLine.arguments.firstIndex(of: "--query"), index + 1 < CommandLine.arguments.count {
+                    model.query = CommandLine.arguments[index + 1]
+                    for column in Column.allCases {
+                        print("== \(column)")
+                        for item in model.items(column) { print("  \(item.searchText.prefix(100))") }
+                    }
+                } else {
+                    Dump.print(store.overview)
+                }
                 exit(0)
             }
             return
@@ -58,6 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if args.contains("--compose") {
                     let issue = model.items(.issues).first { $0.linkedSessions.isEmpty }
                     model.startNew(issue)
+                }
+                if let index = args.firstIndex(of: "--query"), index + 1 < args.count {
+                    model.query = args[index + 1]
                 }
                 if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
                     try? await Task.sleep(for: .seconds(1))

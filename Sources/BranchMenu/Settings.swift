@@ -35,6 +35,8 @@ enum Settings {
         static let windowMode = "windowMode"
         /// "local", or the SSH host new sessions last started on.
         static let startTarget = "startTarget"
+        static let dismissedWaiting = "dismissedWaiting"
+        static let dismissedNextUp = "dismissedNextUp"
     }
 
     /// ⌥⌘Space (kVK_Space, cmdKey | optionKey). macOS gives it to "Show Finder search window"

@@ -372,6 +372,9 @@ private struct RowView: View {
                 Button("Start new session…") { model.startNew(item) }
                 if let url = item.url {
                     Button("Open on GitHub") { model.openOnGitHub(item) }
+                    if let preview = item.preview {
+                        Button("Open \(preview.name) preview") { model.openPreview(item) }
+                    }
                     Button("Copy link") { copy(url.absoluteString) }
                 }
                 if let branch = item.branch {
@@ -533,6 +536,16 @@ struct WaitingPill: View {
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
+            Button {
+                model.store.dismissWaiting(session)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .opacity(0.6)
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .help("Dismiss until it waits on something new")
         }
         .foregroundStyle(Self.ink)
         .padding(.horizontal, 10)
