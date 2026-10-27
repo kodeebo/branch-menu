@@ -123,6 +123,26 @@ enum ReviewDecision: String, Sendable {
     case reviewRequired = "REVIEW_REQUIRED"
 }
 
+/// Whether GitHub would let the PR merge now, apart from reviews and checks.
+enum MergeState: Sendable {
+    case ready, behind, conflicts, blocked, unknown
+}
+
+/// What reviewers said that still waits on your reply. Bots count only in review threads.
+struct PRFeedback: Hashable, Sendable {
+    /// Unresolved review threads where someone else wrote last.
+    var openThreads = 0
+    /// Unresolved threads where an automated reviewer wrote last.
+    var botThreads = 0
+    /// Comments and reviews with text since your last comment on the PR.
+    var newComments = 0
+    /// Logins of the people waiting, in the order they appear.
+    var from: [String] = []
+
+    /// Nothing from people; bot threads may still wait.
+    var isEmpty: Bool { openThreads == 0 && newComments == 0 }
+}
+
 /// An open PR you authored.
 struct MyPR: Identifiable, Hashable, Sendable {
     let repo: RepoRef
@@ -131,13 +151,17 @@ struct MyPR: Identifiable, Hashable, Sendable {
     let branch: String
     let isDraft: Bool
     let review: ReviewDecision?
+    /// Approved by the review decision, or by a reviewer where no review is required.
+    let isApproved: Bool
     let checks: ChecksSummary
     let url: URL
     /// Issues GitHub will close when this PR merges.
     let closes: [Int]
     let updatedAt: Date
-    /// Reviews and comments from others since your last push.
-    let newFeedback: Int
+    /// The branch it merges into.
+    let base: String
+    let merge: MergeState
+    let feedback: PRFeedback
     let preview: PreviewLink?
 
     var id: String { "pr:\(repo.key)#\(number)" }

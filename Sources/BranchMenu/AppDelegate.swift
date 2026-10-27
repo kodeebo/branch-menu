@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 } else {
                     Dump.print(store.overview)
+                    // `--dump --claude` also asks Claude to sort Next up, across every project.
+                    if CommandLine.arguments.contains("--claude") {
+                        await Dump.curate(store)
+                    }
                 }
                 exit(0)
             }
@@ -70,6 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 if let index = args.firstIndex(of: "--query"), index + 1 < args.count {
                     model.query = args[index + 1]
+                }
+                if args.contains("--claude") {
+                    model.askClaude()
+                    try? await Task.sleep(for: .milliseconds(100))
+                    while model.curator.isRunning { try? await Task.sleep(for: .milliseconds(200)) }
                 }
                 if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
                     try? await Task.sleep(for: .seconds(1))
@@ -240,6 +249,26 @@ enum Dump {
                 }
             }
         }
+    }
+
+    @MainActor
+    static func curate(_ store: AppStore) async {
+        let overview = store.overview
+        let candidates = NextUp.candidates(prs: overview.prs, issues: overview.issues)
+        let checkouts = store.repos.compactMap { repo in store.localStates[repo.key].map { (repo, $0) } }
+        let state = NextUp.prompt(candidates: candidates, prs: overview.prs, issues: overview.issues,
+                                  sessions: overview.sessions, checkouts: checkouts)
+        let curator = NextUpCurator()
+        let start = Date()
+        if let error = await curator.curate(candidates: candidates, state: state, projectKey: nil) {
+            Swift.print("\n! \(error)")
+            return
+        }
+        Swift.print("\n== Next up, sorted by Claude (\(String(format: "%.1f", Date().timeIntervalSince(start))) s)")
+        for next in curator.apply(to: candidates, projectKey: nil) ?? [] {
+            Swift.print("  \(next.action) \(next.title.prefix(50))  [\(next.reason)]\n       \(next.note ?? "")")
+        }
+        if CommandLine.arguments.contains("--prompt") { Swift.print("\n\(state)") }
     }
 
     private static func describe(_ item: OverviewItem) -> String {

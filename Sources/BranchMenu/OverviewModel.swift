@@ -62,15 +62,40 @@ final class OverviewModel {
         projectItems(.sessions).filter { if case .session(let s) = $0.kind { s.status == .waiting } else { false } }
     }
 
+    let curator = NextUpCurator()
+
+    private var nextUpCandidates: [NextUpItem] {
+        NextUp.candidates(prs: projectItems(.prs), issues: projectItems(.issues))
+    }
+
+    /// Claude's order after "Ask Claude", otherwise the rules'.
     var nextUp: [NextUpItem] {
-        let all = NextUp.items(prs: projectItems(.prs), issues: projectItems(.issues), limit: .max)
-        return Array(all.filter { dismissedNextUp[$0.id] != Self.fingerprint($0) }.prefix(7))
+        let candidates = nextUpCandidates.filter { dismissedNextUp[$0.id] != Self.fingerprint($0) }
+        return curator.apply(to: candidates, projectKey: projectKey) ?? NextUp.top(candidates)
+    }
+
+    var nextUpIsCurated: Bool { curator.apply(to: nextUpCandidates, projectKey: projectKey) != nil }
+
+    /// Something to do came or went since Claude sorted the list.
+    var nextUpChangedSinceCurated: Bool {
+        curator.fingerprint != NextUpCurator.fingerprint(nextUpCandidates)
+    }
+
+    func askClaude() {
+        let candidates = nextUpCandidates
+        let state = NextUp.prompt(candidates: candidates, prs: projectItems(.prs), issues: projectItems(.issues),
+                                  sessions: projectItems(.sessions), checkouts: localCheckouts)
+        Task {
+            if let error = await curator.curate(candidates: candidates, state: state, projectKey: projectKey) {
+                flash(error)
+            }
+        }
     }
 
     /// Hides the row until its PR or issue changes.
     func dismiss(_ next: NextUpItem) {
         // Forget rows that can no longer show, so the list doesn't grow forever.
-        let current = Set(NextUp.items(prs: store.overview.items(.prs), issues: store.overview.items(.issues), limit: .max).map(\.id))
+        let current = Set(NextUp.candidates(prs: store.overview.items(.prs), issues: store.overview.items(.issues)).map(\.id))
         dismissedNextUp = dismissedNextUp.filter { current.contains($0.key) }
         dismissedNextUp[next.id] = Self.fingerprint(next)
         UserDefaults.standard.set(dismissedNextUp, forKey: Settings.Key.dismissedNextUp)
