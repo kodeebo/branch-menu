@@ -123,6 +123,10 @@ private struct NextUpCard: View {
                 if !items.isEmpty {
                     Text(verbatim: "\(items.count)").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
+                Spacer()
+                if model.curator.isAvailable && !items.isEmpty {
+                    CuratorControl(model: model)
+                }
             }
             if items.isEmpty {
                 Text(model.store.overview.githubLoaded ? "Nothing to merge, answer or review." : "Loading from GitHub…")
@@ -139,40 +143,110 @@ private struct NextUpCard: View {
     }
 }
 
+/// "Ask Claude" to sort the list; once sorted, when it was and a way back to the rules.
+private struct CuratorControl: View {
+    let model: OverviewModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if model.curator.isRunning {
+                ProgressView().controlSize(.mini)
+                Text("Claude is sorting…")
+            } else if model.nextUpIsCurated, let date = model.curator.curatedAt {
+                Image(systemName: "sparkles")
+                let when = age(date) == "now" ? "just now" : "\(age(date)) ago"
+                Text(verbatim: "Sorted by Claude \(when)" + (model.nextUpChangedSinceCurated ? " · list changed" : ""))
+                link("Again") { model.askClaude() }
+                link("Rules") { model.curator.clear() }
+            } else {
+                link("Ask Claude", icon: "sparkles") { model.askClaude() }
+                    .help("Let Claude pick and order Next up, using your sessions and their recaps")
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+    }
+
+    private func link(_ title: String, icon: String? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            if let icon { Label(title, systemImage: icon) } else { Text(title) }
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+    }
+}
+
 private struct NextUpRow: View {
     let model: OverviewModel
     let next: NextUpItem
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: icon.name)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(icon.color)
-                .frame(width: 16)
-            (Text(verbatim: next.action + " ").fontWeight(.medium) + Text(verbatim: next.title).foregroundStyle(.secondary))
-                .font(.system(size: 12.5))
-                .lineLimit(1)
-            Spacer(minLength: 6)
-            Text(next.reason)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .layoutPriority(1)
-            Button(button.title, action: button.action)
-                .controlSize(.small)
-                .pointerStyle(.link)
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 9) {
+                Image(systemName: icon.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(icon.color)
+                    .frame(width: 16)
+                (Text(verbatim: next.action + " ").fontWeight(.medium) + Text(verbatim: next.title).foregroundStyle(.secondary))
+                    .font(.system(size: 12.5))
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(next.reason)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                Button(button.title, action: button.action)
+                    .controlSize(.small)
+                    .pointerStyle(.link)
+            }
+            // Claude's reason gets the whole width under the title.
+            if let note = next.note {
+                Text(note)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .padding(.leading, 25)
+            }
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 7).fill(hovering ? Color.primary.opacity(0.05) : .clear))
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .help([next.reason, next.note].compactMap { $0 }.joined(separator: "\n"))
+        .contextMenu { menu }
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        let item = next.item
+        let noun = item.column == .issues ? "issue" : "PR"
+        if let number = item.number, item.url != nil {
+            Button("Open \(noun) #\(number) on GitHub") { model.openOnGitHub(item) }
+        }
+        Button("Show in \(item.column.title)") { model.reveal(item) }
+        Divider()
+        if let session = item.linkedSessions.first {
+            Button("Open session “\(session.name)”") { model.open(session) }
+        }
+        Button("Start new session…") { model.startNew(item) }
+        if let url = item.url {
+            Divider()
+            Button("Copy link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            }
+        }
     }
 
     private var icon: (name: String, color: Color) {
         switch next.kind {
         case .merge: ("arrow.triangle.merge", Color(light: 0x8250DF, dark: 0xA371F7))
         case .answer: ("text.bubble", StatusColor.amber)
+        case .update: ("arrow.triangle.branch", StatusColor.amber)
         case .fixChecks: ("xmark.octagon", StatusColor.red)
         case .review: ("eye", Color.accentColor)
         case .start: ("play.fill", StatusColor.green)
@@ -187,7 +261,7 @@ private struct NextUpRow: View {
             return ("Open PR", { model.openOnGitHub(item) })
         case .answer:
             return ("Open PR", { model.openOnGitHub(item) })
-        case .fixChecks:
+        case .fixChecks, .update:
             if let session { return ("Resume", { model.open(session) }) }
             return ("Start now", { model.startNew(item) })
         case .review:

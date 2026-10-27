@@ -58,8 +58,34 @@ final class OverviewModel {
         projectItems(.sessions).filter { if case .session(let s) = $0.kind { s.status == .waiting } else { false } }
     }
 
+    let curator = NextUpCurator()
+
+    private var nextUpCandidates: [NextUpItem] {
+        NextUp.candidates(prs: projectItems(.prs), issues: projectItems(.issues))
+    }
+
+    /// Claude's order after "Ask Claude", otherwise the rules'.
     var nextUp: [NextUpItem] {
-        NextUp.items(prs: projectItems(.prs), issues: projectItems(.issues))
+        let candidates = nextUpCandidates
+        return curator.apply(to: candidates, projectKey: projectKey) ?? NextUp.top(candidates)
+    }
+
+    var nextUpIsCurated: Bool { curator.apply(to: nextUpCandidates, projectKey: projectKey) != nil }
+
+    /// Something to do came or went since Claude sorted the list.
+    var nextUpChangedSinceCurated: Bool {
+        curator.fingerprint != NextUpCurator.fingerprint(nextUpCandidates)
+    }
+
+    func askClaude() {
+        let candidates = nextUpCandidates
+        let state = NextUp.prompt(candidates: candidates, prs: projectItems(.prs), issues: projectItems(.issues),
+                                  sessions: projectItems(.sessions), checkouts: localCheckouts)
+        Task {
+            if let error = await curator.curate(candidates: candidates, state: state, projectKey: projectKey) {
+                flash(error)
+            }
+        }
     }
 
     /// The chosen project's main checkout, or every repo that has something to show.
@@ -131,6 +157,15 @@ final class OverviewModel {
     /// Rows name their repo only when the column mixes several.
     func showsRepo(in column: Column) -> Bool {
         Set(projectItems(column).compactMap { $0.repo?.key }).count > 1
+    }
+
+    /// Selects the item in its column, clearing whatever hides it there.
+    func reveal(_ item: OverviewItem) {
+        query = ""
+        if item.column == .prs, prFilter != .all, !items(.prs).contains(where: { $0.id == item.id }) {
+            togglePRFilter(prFilter)
+        }
+        select(item)
     }
 
     func select(_ item: OverviewItem) {
